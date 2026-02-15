@@ -80,21 +80,23 @@ def test_run_wolf_path():
 
 def test_resid_map():
     """resid_map returns sequential IDs for .dat-loaded, PDB IDs for imported."""
-    # .dat-loaded: sequential 1..=nres
+    # .dat-loaded: sequential 1..=nres, numbering="sequential"
     p_dat = dali.read_dat(os.path.join(DAT_DIR, "101mA.dat"))
     rmap = p_dat.resid_map
     assert len(rmap) == p_dat.nres, f"expected len {p_dat.nres}, got {len(rmap)}"
     assert rmap == list(range(1, p_dat.nres + 1)), "expected sequential for .dat-loaded"
+    assert p_dat.numbering == "sequential", f"expected 'sequential', got '{p_dat.numbering}'"
 
-    # PDB-imported: should be PDB residue numbers
+    # PDB-imported: should be PDB residue numbers, numbering="pdb"
     if os.path.exists(PDB_PATH):
         p_pdb = dali.import_pdb(PDB_PATH, "A", "101m")
         rmap_pdb = p_pdb.resid_map
         assert len(rmap_pdb) == p_pdb.nres
         assert all(isinstance(x, int) for x in rmap_pdb)
-        print(f"  resid_map: dat={rmap[:3]}...  pdb={rmap_pdb[:3]}...")
+        assert p_pdb.numbering == "pdb", f"expected 'pdb', got '{p_pdb.numbering}'"
+        print(f"  resid_map: dat={rmap[:3]}... ({p_dat.numbering})  pdb={rmap_pdb[:3]}... ({p_pdb.numbering})")
     else:
-        print(f"  resid_map: dat={rmap[:3]}... (PDB skipped)")
+        print(f"  resid_map: dat={rmap[:3]}... ({p_dat.numbering}) (PDB skipped)")
 
 
 def test_write_dat_roundtrip():
@@ -148,13 +150,43 @@ def test_align_pdb():
     ident_err = np.abs(eye - np.eye(3)).max()
     assert ident_err < 0.01, f"R^T R not identity, max err={ident_err:.4f}"
 
-    # Alignments should be in PDB numbering (positive integers)
+    # Alignments should be 1-based sequential indices (matching Fortran .dat convention)
     for q_res, t_res in result.alignments:
         assert isinstance(q_res, int) and isinstance(t_res, int)
+        assert q_res >= 1, f"query index {q_res} < 1"
+        assert t_res >= 1, f"template index {t_res} < 1"
 
     print(f"  align_pdb: {result}")
     print(f"    n_aligned={result.n_aligned}, nblock={len(result.blocks)}")
     print(f"    first 3 pairs: {result.alignments[:3]}")
+
+
+def test_align_pdb_with_dat():
+    """align_pdb with template_dat bypasses DSSP and uses .dat file directly."""
+    pdb_dir = os.path.join(DAT_DIR, "pdb")
+    q_path = os.path.join(pdb_dir, "pdb101m.ent.gz")
+    t_path = os.path.join(pdb_dir, "pdb1a00.ent.gz")
+    t_dat = os.path.join(DAT_DIR, "1a00A.dat")
+    if not (os.path.exists(q_path) and os.path.exists(t_dat)):
+        print(f"  align_pdb_with_dat: SKIPPED (files not found)")
+        return
+
+    # Align using .dat for template (bypasses Rust DSSP for template)
+    result = dali.align_pdb(
+        q_path, t_path, "A", "A", "101m", "1a00A",
+        template_dat=t_dat,
+    )
+    assert result is not None, "expected AlignResult, got None"
+    assert result.zscore > 0, f"expected zscore > 0, got {result.zscore}"
+    assert result.n_aligned > 0, f"expected n_aligned > 0, got {result.n_aligned}"
+
+    # Compare with PDB-only alignment
+    result_pdb = dali.align_pdb(q_path, t_path, "A", "A", "101m", "1a00")
+    assert result_pdb is not None
+
+    # Both should find alignments (z-scores may differ due to different template DSSP)
+    print(f"  align_pdb_with_dat: z={result.zscore:.1f} (dat), z={result_pdb.zscore:.1f} (pdb)")
+    print(f"    n_aligned: {result.n_aligned} (dat), {result_pdb.n_aligned} (pdb)")
 
 
 if __name__ == "__main__":
@@ -168,6 +200,7 @@ if __name__ == "__main__":
         ("resid_map", test_resid_map),
         ("write_dat_roundtrip", test_write_dat_roundtrip),
         ("align_pdb", test_align_pdb),
+        ("align_pdb_with_dat", test_align_pdb_with_dat),
     ]
 
     passed = 0

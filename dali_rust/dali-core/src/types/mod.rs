@@ -2,7 +2,7 @@ pub mod protein;
 pub mod alignment;
 pub mod distance;
 
-pub use protein::{DomainNode, NodeType, Protein, Segment, SseType};
+pub use protein::{DomainNode, NodeType, Protein, ResidNumbering, Segment, SseType};
 pub use alignment::{
     Alignment, AlignmentBlock, DccpEntry, ParsiHit, ScoredAlignment, compress_blocks,
 };

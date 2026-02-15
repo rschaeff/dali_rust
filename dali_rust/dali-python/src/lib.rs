@@ -110,12 +110,21 @@ impl PyProtein {
         PyArray2::from_array(py, &self.inner.ca)
     }
 
-    /// Return PDB residue serial numbers (1-based).
-    /// For .dat-loaded proteins, this is sequential 1..=nres.
-    /// For PDB-imported proteins, this reflects actual PDB numbering.
+    /// Return residue identifiers.
+    /// For .dat-loaded proteins (numbering="sequential"), this is 1..=nres.
+    /// For PDB-imported proteins (numbering="pdb"), this reflects actual PDB numbering.
     #[getter]
     fn resid_map(&self) -> Vec<i32> {
         self.inner.resid_map.clone()
+    }
+
+    /// Return the numbering convention: "sequential" (from .dat) or "pdb" (from import_pdb).
+    #[getter]
+    fn numbering(&self) -> &str {
+        match self.inner.numbering {
+            dali_core::ResidNumbering::Sequential => "sequential",
+            dali_core::ResidNumbering::Pdb => "pdb",
+        }
     }
 
     /// Write this protein to a .dat file.
@@ -225,7 +234,7 @@ struct PyAlignResult {
     #[pyo3(get)]
     n_aligned: usize,
     #[pyo3(get)]
-    alignments: Vec<(i32, i32)>,  // (query_pdb_resid, template_pdb_resid)
+    alignments: Vec<(i32, i32)>,  // (query_sequential_1based, template_sequential_1based)
     #[pyo3(get)]
     rotation: Vec<Vec<f64>>,       // 3x3 rotation matrix
     #[pyo3(get)]
@@ -242,13 +251,17 @@ impl PyAlignResult {
     }
 }
 
-/// Align two PDB/CIF files and return the best structural alignment.
+/// Align two structures and return the best structural alignment.
 ///
-/// Imports both structures, runs the full DALI pipeline, and returns
-/// the best hit (highest Z-score) with rotation, translation, and
-/// residue-level alignment pairs in PDB numbering.
+/// By default, imports both structures from PDB/CIF files (computing DSSP
+/// internally). When `query_dat` or `template_dat` is provided, that protein
+/// is loaded from a pre-computed .dat file instead, bypassing DSSP computation.
+/// This eliminates DSSP divergence when using Fortran-generated .dat files.
+///
+/// Returns alignment pairs in 1-based sequential numbering (matching Fortran
+/// .dat convention for both query and template).
 #[pyfunction]
-#[pyo3(signature = (query_path, template_path, query_chain="A", template_chain="A", query_code="query", template_code="templ"))]
+#[pyo3(signature = (query_path, template_path, query_chain="A", template_chain="A", query_code="query", template_code="templ", query_dat=None, template_dat=None))]
 fn align_pdb(
     query_path: &str,
     template_path: &str,
@@ -256,14 +269,28 @@ fn align_pdb(
     template_chain: &str,
     query_code: &str,
     template_code: &str,
+    query_dat: Option<&str>,
+    template_dat: Option<&str>,
 ) -> PyResult<Option<PyAlignResult>> {
-    // Import both proteins
-    let query = import::import_pdb(query_path, query_chain, query_code)
-        .map_err(|e| PyValueError::new_err(format!("Query import error: {}", e)))?;
-    let template = import::import_pdb(template_path, template_chain, template_code)
-        .map_err(|e| PyValueError::new_err(format!("Template import error: {}", e)))?;
+    // Load query: from .dat if provided, otherwise import from PDB
+    let query = if let Some(dat_path) = query_dat {
+        dat::read_dat(dat_path)
+            .map_err(|e| PyValueError::new_err(format!("Query .dat read error: {:?}", e)))?
+    } else {
+        import::import_pdb(query_path, query_chain, query_code)
+            .map_err(|e| PyValueError::new_err(format!("Query import error: {}", e)))?
+    };
 
-    // Write to temp .dat files
+    // Load template: from .dat if provided, otherwise import from PDB
+    let template = if let Some(dat_path) = template_dat {
+        dat::read_dat(dat_path)
+            .map_err(|e| PyValueError::new_err(format!("Template .dat read error: {:?}", e)))?
+    } else {
+        import::import_pdb(template_path, template_chain, template_code)
+            .map_err(|e| PyValueError::new_err(format!("Template import error: {}", e)))?
+    };
+
+    // Write to temp .dat files for ProteinStore
     let tmp_dir = std::env::temp_dir().join(format!("dali_align_{}", std::process::id()));
     std::fs::create_dir_all(&tmp_dir)
         .map_err(|e| PyValueError::new_err(format!("Cannot create temp dir: {}", e)))?;
@@ -273,10 +300,22 @@ fn align_pdb(
 
     let cleanup = || { let _ = std::fs::remove_dir_all(&tmp_dir); };
 
-    dat::write_dat(&query, &q_dat)
-        .map_err(|e| { cleanup(); PyValueError::new_err(format!("Write query .dat: {}", e)) })?;
-    dat::write_dat(&template, &t_dat)
-        .map_err(|e| { cleanup(); PyValueError::new_err(format!("Write template .dat: {}", e)) })?;
+    // If .dat was provided, symlink/copy it; otherwise write from imported protein
+    if let Some(dat_path) = query_dat {
+        std::fs::copy(dat_path, &q_dat)
+            .map_err(|e| { cleanup(); PyValueError::new_err(format!("Copy query .dat: {}", e)) })?;
+    } else {
+        dat::write_dat(&query, &q_dat)
+            .map_err(|e| { cleanup(); PyValueError::new_err(format!("Write query .dat: {}", e)) })?;
+    }
+
+    if let Some(dat_path) = template_dat {
+        std::fs::copy(dat_path, &t_dat)
+            .map_err(|e| { cleanup(); PyValueError::new_err(format!("Copy template .dat: {}", e)) })?;
+    } else {
+        dat::write_dat(&template, &t_dat)
+            .map_err(|e| { cleanup(); PyValueError::new_err(format!("Write template .dat: {}", e)) })?;
+    }
 
     // Run pipeline
     let store = ProteinStore::new(&tmp_dir);
@@ -313,7 +352,11 @@ fn align_pdb(
         }
     };
 
-    // Expand blocks to residue-level pairs in PDB numbering
+    // Expand blocks to residue-level pairs.
+    // Both query and template use 1-based sequential indices, matching the
+    // Fortran .dat convention. This makes align_pdb() a drop-in replacement
+    // for Fortran dali.pl — callers (e.g. DPAM Step 7) map sequential indices
+    // to PDB residue IDs via their own Qresids array.
     let mut alignments: Vec<(i32, i32)> = Vec::new();
     let mut n_aligned = 0usize;
     for b in &best.blocks {
@@ -321,8 +364,8 @@ fn align_pdb(
         for k in 0..len {
             let q_idx = (b.l1 as usize - 1) + k;  // 0-based internal index
             let t_idx = (b.l2 as usize - 1) + k;
-            if q_idx < query.resid_map.len() && t_idx < template.resid_map.len() {
-                alignments.push((query.resid_map[q_idx], template.resid_map[t_idx]));
+            if q_idx < query.nres && t_idx < template.nres {
+                alignments.push(((q_idx + 1) as i32, (t_idx + 1) as i32));
                 n_aligned += 1;
             }
         }

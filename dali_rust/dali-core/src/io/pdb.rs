@@ -187,11 +187,16 @@ fn extract_backbone(
         });
     }
 
-    let code = format!(
-        "{}{}",
-        pdb_code,
-        if chain_id.len() == 1 { &chain_id } else { "" }
-    );
+    // Build protein code: append chain if pdb_code doesn't already end with it.
+    // Callers may pass "101m" (4-char) or "101mA" (5-char, already chain-suffixed).
+    // Truncate to 5 chars max (.dat format requires 5-char code field).
+    let code = if chain_id.len() == 1 && !pdb_code.ends_with(&*chain_id) {
+        let full = format!("{}{}", pdb_code, chain_id);
+        if full.len() > 5 { full[..5].to_string() } else { full }
+    } else {
+        let s = pdb_code.to_string();
+        if s.len() > 5 { s[..5].to_string() } else { s }
+    };
 
     Ok(BackboneData {
         code,

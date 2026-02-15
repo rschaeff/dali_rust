@@ -12,7 +12,7 @@ pub mod pipeline;
 
 // Re-export key types
 pub use types::{
-    Protein, Segment, SseType, DomainNode, NodeType,
+    Protein, Segment, SseType, DomainNode, NodeType, ResidNumbering,
     Alignment, AlignmentBlock, ScoredAlignment, DccpEntry, ParsiHit,
     DistMatScale10, DistMatScale100, DaliconDistMat, ParsiDistMat,
     compress_blocks,

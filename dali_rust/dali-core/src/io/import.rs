@@ -90,5 +90,6 @@ pub fn import_pdb<P: AsRef<Path>>(
         sequence: backbone.sequence,
         domain_tree,
         resid_map: backbone.resid_map,
+        numbering: crate::ResidNumbering::Pdb,
     })
 }

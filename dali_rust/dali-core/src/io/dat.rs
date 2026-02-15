@@ -228,6 +228,7 @@ pub fn read_dat<P: AsRef<Path>>(filepath: P) -> Result<Protein, DatError> {
         sequence,
         domain_tree,
         resid_map,
+        numbering: crate::ResidNumbering::Sequential,
     })
 }
 
@@ -241,13 +242,16 @@ pub fn write_dat<P: AsRef<Path>>(protein: &Protein, filepath: P) -> Result<(), D
     let mut f = std::fs::File::create(filepath.as_ref())
         .map_err(|e| DatError::Io(e.to_string()))?;
 
+    // .dat format uses a 5-character code field; truncate if longer
+    let code = if protein.code.len() > 5 { &protein.code[..5] } else { &protein.code };
+
     // Build secondary structure string
     let secstr_str: String = protein.secstr.iter().map(|s| s.to_char()).collect();
 
     // Section 1 header: >>>> CODE  NRES NSEG  NA  NB  SECSTR
     // Positions: 0-3 ">>>>", 4 " ", 5-9 code, 10-14 nres, 15-19 nseg, 20-24 na, 25-29 nb, 30-31 "  ", 32+ secstr
     writeln!(f, ">>>> {:>5}{:>5}{:>5}{:>5}{:>5}  {}",
-             protein.code, protein.nres, protein.nseg, protein.na, protein.nb, secstr_str)
+             code, protein.nres, protein.nseg, protein.na, protein.nb, secstr_str)
         .map_err(|e| DatError::Io(e.to_string()))?;
 
     // Segments: 6i10 format (index, start, end, check_start, check_end, checkx)
@@ -275,13 +279,13 @@ pub fn write_dat<P: AsRef<Path>>(protein: &Protein, filepath: P) -> Result<(), D
 
     // Section 2: SSE hierarchy (header only — read_dat skips content)
     writeln!(f, ">>>> {:>5}{:>5}{:>5}{:>5}{:>5}  {}",
-             protein.code, protein.nres, protein.nseg, protein.na, protein.nb, secstr_str)
+             code, protein.nres, protein.nseg, protein.na, protein.nb, secstr_str)
         .map_err(|e| DatError::Io(e.to_string()))?;
 
     // Section 3: domain decomposition tree
     let ndom = protein.domain_tree.len();
     // Header: >>>> at 0-3, space at 4, code at 5-9, ndom at 10-14
-    writeln!(f, ">>>> {:>5}{:>5}", protein.code, ndom)
+    writeln!(f, ">>>> {:>5}{:>5}", code, ndom)
         .map_err(|e| DatError::Io(e.to_string()))?;
 
     for node in &protein.domain_tree {

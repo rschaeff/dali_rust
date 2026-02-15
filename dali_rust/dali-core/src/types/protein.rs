@@ -73,6 +73,15 @@ pub struct DomainNode {
     pub segments: Vec<(u32, u32)>, // (start, end) pairs, 1-based
 }
 
+/// How residues in `resid_map` are numbered.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ResidNumbering {
+    /// Sequential 1..=nres (from .dat files, which don't store PDB numbering).
+    Sequential,
+    /// PDB residue serial numbers (from `import_pdb`, may have gaps or not start at 1).
+    Pdb,
+}
+
 /// A protein structure with all data needed by the DALI pipeline.
 #[derive(Debug, Clone)]
 pub struct Protein {
@@ -86,7 +95,8 @@ pub struct Protein {
     pub ca: Array2<f64>,             // (3, nres) CA coordinates
     pub sequence: String,            // amino acid sequence (if available)
     pub domain_tree: Vec<DomainNode>, // hierarchical decomposition
-    pub resid_map: Vec<i32>,         // PDB residue serial numbers (1-based); sequential for .dat-loaded
+    pub resid_map: Vec<i32>,         // residue identifiers (see numbering field)
+    pub numbering: ResidNumbering,   // how resid_map values should be interpreted
 }
 
 impl Protein {
