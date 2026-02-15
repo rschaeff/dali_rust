@@ -160,6 +160,45 @@ pub fn transrotate(x: &mut Array2<f64>, u: &Array2<f64>, t: &Array1<f64>) {
     }
 }
 
+/// Compute rotation matrix and translation vector from alignment blocks.
+///
+/// Extracts aligned CA pairs from the alignment blocks, computes Kabsch
+/// superposition (U, T) such that U*ca1 + T ~ ca2 for the aligned positions.
+///
+/// Returns None if no aligned pairs exist.
+pub fn compute_transform(
+    ca1: &Array2<f64>,  // (3, nres1)
+    ca2: &Array2<f64>,  // (3, nres2)
+    blocks: &[crate::AlignmentBlock],
+) -> Option<(Array2<f64>, Array1<f64>)> {
+    // Count total aligned pairs
+    let n: usize = blocks.iter().map(|b| (b.r1 - b.l1 + 1) as usize).sum();
+    if n == 0 {
+        return None;
+    }
+
+    // Extract aligned coordinates
+    let mut x = Array2::zeros((3, n));
+    let mut y = Array2::zeros((3, n));
+    let mut idx = 0;
+    for b in blocks {
+        let len = (b.r1 - b.l1 + 1) as usize;
+        for k in 0..len {
+            let i1 = (b.l1 as usize - 1) + k; // 0-based
+            let i2 = (b.l2 as usize - 1) + k;
+            for d in 0..3 {
+                x[[d, idx]] = ca1[[d, i1]];
+                y[[d, idx]] = ca2[[d, i2]];
+            }
+            idx += 1;
+        }
+    }
+
+    let w: Vec<f64> = vec![1.0; n];
+    let result = u3b(&w, &x, &y, n, 1);
+    Some((result.u, result.t))
+}
+
 // --- Internal linear algebra for 3x3 matrices ---
 
 fn det3x3(m: &Array2<f64>) -> f64 {

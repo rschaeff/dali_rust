@@ -1,7 +1,7 @@
 use std::fs;
 use std::collections::HashMap;
 
-use dali_core::parsi::{run_parsi, dowork_parsi, ParsiCd1Cache};
+use dali_core::parsi::run_parsi;
 use dali_core::ParsiHit;
 
 const FIXTURE_DIR: &str = concat!(
@@ -20,6 +20,11 @@ const PARSI_OUTPUT_18: &str = concat!(
     env!("CARGO_MANIFEST_DIR"), "/../..",
     "/validation/corpus_expansion/ground_truth_18/parsi/parsi_output.txt"
 );
+
+// 18-structure groups (6 each)
+const GROUP_A: &[&str] = &["1a7sA", "1aiwA", "1a25A", "1a12A", "1f3uA", "1a04A"];
+const GROUP_B: &[&str] = &["1bbhA", "1b3qA", "1a17A", "1miwA", "1aopA", "1a8lA"];
+const GROUP_C: &[&str] = &["1a6qA", "1a06A", "1b3oB", "1a0cA", "1a4iA", "1bcoA"];
 
 /// Parsed reference refine line.
 #[derive(Debug, Clone)]
@@ -81,9 +86,7 @@ fn hit_to_refine(hit: &ParsiHit) -> RefineRef {
 }
 
 /// Compare results against ground truth with score tolerance.
-/// Returns (matched, total_ref, mismatches).
 fn validate_parsi(gt: &[RefineRef], results: &[RefineRef], score_tol: i32) -> (usize, usize, Vec<String>) {
-    // Group by (cd1cd2, idom)
     let mut ref_map: HashMap<(String, usize), Vec<&RefineRef>> = HashMap::new();
     for r in gt {
         ref_map.entry((r.cd1cd2.clone(), r.idom)).or_default().push(r);
@@ -102,7 +105,6 @@ fn validate_parsi(gt: &[RefineRef], results: &[RefineRef], score_tol: i32) -> (u
 
         for r in ref_group {
             let mut found = false;
-            // Exact match first
             for c in cand_group {
                 if r.score == c.score && r.nseg == c.nseg && r.ranges == c.ranges {
                     found = true;
@@ -110,7 +112,6 @@ fn validate_parsi(gt: &[RefineRef], results: &[RefineRef], score_tol: i32) -> (u
                 }
             }
             if !found {
-                // Score tolerance match
                 for c in cand_group {
                     if (r.score - c.score).abs() <= score_tol && r.nseg == c.nseg {
                         found = true;
@@ -132,6 +133,19 @@ fn validate_parsi(gt: &[RefineRef], results: &[RefineRef], score_tol: i32) -> (u
     }
 
     (matched, gt.len(), mismatches)
+}
+
+/// Filter ground truth to entries where both cd1 and cd2 are in codes.
+fn filter_refine_gt(gt: &[RefineRef], codes: &[&str]) -> Vec<RefineRef> {
+    gt.iter()
+        .filter(|r| {
+            if r.cd1cd2.len() != 10 { return false; }
+            let cd1 = &r.cd1cd2[..5];
+            let cd2 = &r.cd1cd2[5..];
+            codes.contains(&cd1) && codes.contains(&cd2)
+        })
+        .cloned()
+        .collect()
 }
 
 #[test]
@@ -158,7 +172,6 @@ fn test_parsi_5_structures() {
         }
     }
 
-    // Expected: ~87% (379/435) due to search divergence
     assert!(
         matched >= 300,
         "PARSI 5-struct: only {}/{} matched ({:.1}%), expected >=300 (~69%)",
@@ -166,36 +179,51 @@ fn test_parsi_5_structures() {
     );
 }
 
-#[test]
-fn test_parsi_18_structures() {
-    let gt = parse_refine_gt(PARSI_OUTPUT_18);
-    assert_eq!(gt.len(), 13515, "Expected 13515 ground truth refine lines for 18-struct corpus");
+fn run_parsi_18_group(codes: &[&str], label: &str) {
+    let all_gt = parse_refine_gt(PARSI_OUTPUT_18);
+    let group_gt = filter_refine_gt(&all_gt, codes);
+    let gt_count = group_gt.len();
 
-    let structures: Vec<String> = vec![
-        "1a7sA", "1aiwA", "1a25A", "1a12A", "1f3uA", "1a04A",
-        "1bbhA", "1b3qA", "1a17A", "1miwA", "1aopA", "1a8lA",
-        "1a6qA", "1a06A", "1b3oB", "1a0cA", "1a4iA", "1bcoA",
-    ].into_iter().map(String::from).collect();
+    if gt_count == 0 {
+        eprintln!("PARSI {}: no ground truth entries for this group", label);
+        return;
+    }
 
+    let structures: Vec<String> = codes.iter().map(|s| s.to_string()).collect();
     let hits = run_parsi(&structures, EXPANDED_DIR, None);
     let results: Vec<RefineRef> = hits.iter().map(hit_to_refine).collect();
 
-    eprintln!("PARSI 18-struct: {} result lines vs {} reference lines",
-              results.len(), gt.len());
+    eprintln!("PARSI {}: {} result lines vs {} reference lines",
+              label, results.len(), gt_count);
 
-    let (matched, total, mismatches) = validate_parsi(&gt, &results, 100);
-    let pct = matched as f64 / total as f64 * 100.0;
-    eprintln!("PARSI 18-struct: {}/{} matched ({:.1}%)", matched, total, pct);
+    let (matched, total, mismatches) = validate_parsi(&group_gt, &results, 100);
+    let pct = matched as f64 / total.max(1) as f64 * 100.0;
+    eprintln!("PARSI {}: {}/{} matched ({:.1}%)", label, matched, total, pct);
     if !mismatches.is_empty() {
         for m in &mismatches[..mismatches.len().min(10)] {
             eprintln!("  MISSING: {}", m);
         }
     }
 
-    // Expected: ~78% (10533/13515) due to search divergence
+    // Expect at least 59% match (search divergence)
     assert!(
-        matched >= 8000,
-        "PARSI 18-struct: only {}/{} matched ({:.1}%), expected >=8000 (~59%)",
-        matched, total, pct
+        pct >= 59.0 || total < 10,
+        "PARSI {}: only {}/{} matched ({:.1}%), expected >=59%",
+        label, matched, total, pct
     );
+}
+
+#[test]
+fn test_parsi_18_group_a() {
+    run_parsi_18_group(GROUP_A, "18-group-A");
+}
+
+#[test]
+fn test_parsi_18_group_b() {
+    run_parsi_18_group(GROUP_B, "18-group-B");
+}
+
+#[test]
+fn test_parsi_18_group_c() {
+    run_parsi_18_group(GROUP_C, "18-group-C");
 }

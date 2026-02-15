@@ -1,4 +1,3 @@
-use std::collections::HashMap;
 use ndarray::Array2;
 
 use super::geometry::{preparex, twist};
@@ -45,8 +44,8 @@ pub fn compare(
                 continue;
             }
 
-            // Vote counts
-            let mut count: HashMap<(usize, usize), usize> = HashMap::new();
+            // Vote counts — flat array indexed by (a * nseg_cd1 + b)
+            let mut count = vec![0usize; nseg_cd1 * nseg_cd1];
 
             // Build canonical frame for cd2 pair (iseg, jseg)
             let mut x = preparex(iseg, jseg, nseg_cd2, mid_cd2, dir_cd2);
@@ -131,8 +130,10 @@ pub fn compare(
                         continue;
                     }
 
-                    // Vote
-                    *count.entry((cur_a, cur_b)).or_insert(0) += 1;
+                    // Vote (bounds check: grid may contain indices >= nseg_cd1)
+                    if cur_a < nseg_cd1 && cur_b < nseg_cd1 {
+                        count[cur_a * nseg_cd1 + cur_b] += 1;
+                    }
                 }
             }
 
@@ -144,7 +145,7 @@ pub fn compare(
             let mut local_vseg = 0usize;
             for lseg in 0..protein_nseg {
                 for kseg_inner in 0..protein_nseg {
-                    let c = count.get(&(lseg, kseg_inner)).copied().unwrap_or(0);
+                    let c = count[lseg * nseg_cd1 + kseg_inner];
                     if c > local_best {
                         local_best = c;
                         local_useg = lseg;

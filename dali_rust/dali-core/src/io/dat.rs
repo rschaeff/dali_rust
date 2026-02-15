@@ -1,3 +1,4 @@
+use std::io::Write;
 use std::path::Path;
 use ndarray::Array2;
 
@@ -212,6 +213,9 @@ pub fn read_dat<P: AsRef<Path>>(filepath: P) -> Result<Protein, DatError> {
         .map(|&c| SseType::from_char(c).unwrap_or(SseType::Helix))
         .collect();
 
+    // .dat files don't store PDB residue IDs; use sequential 1..=nres
+    let resid_map: Vec<i32> = (1..=nres as i32).collect();
+
     Ok(Protein {
         code,
         nres,
@@ -223,7 +227,82 @@ pub fn read_dat<P: AsRef<Path>>(filepath: P) -> Result<Protein, DatError> {
         ca,
         sequence,
         domain_tree,
+        resid_map,
     })
+}
+
+/// Write a Protein to a DaliLite .dat file.
+///
+/// Produces a file with 3 `>>>>` sections that `read_dat` can parse:
+///   Section 1: header + segments (6i10) + CA coords (10f8.1)
+///   Section 2: SSE hierarchy header (content skipped by read_dat)
+///   Section 3: domain decomposition tree
+pub fn write_dat<P: AsRef<Path>>(protein: &Protein, filepath: P) -> Result<(), DatError> {
+    let mut f = std::fs::File::create(filepath.as_ref())
+        .map_err(|e| DatError::Io(e.to_string()))?;
+
+    // Build secondary structure string
+    let secstr_str: String = protein.secstr.iter().map(|s| s.to_char()).collect();
+
+    // Section 1 header: >>>> CODE  NRES NSEG  NA  NB  SECSTR
+    // Positions: 0-3 ">>>>", 4 " ", 5-9 code, 10-14 nres, 15-19 nseg, 20-24 na, 25-29 nb, 30-31 "  ", 32+ secstr
+    writeln!(f, ">>>> {:>5}{:>5}{:>5}{:>5}{:>5}  {}",
+             protein.code, protein.nres, protein.nseg, protein.na, protein.nb, secstr_str)
+        .map_err(|e| DatError::Io(e.to_string()))?;
+
+    // Segments: 6i10 format (index, start, end, check_start, check_end, checkx)
+    for (i, seg) in protein.segments.iter().enumerate() {
+        writeln!(f, "{:>10}{:>10}{:>10}{:>10}{:>10}{:>10}",
+                 i + 1, seg.start, seg.end, seg.check_start, seg.check_end, seg.checkx)
+            .map_err(|e| DatError::Io(e.to_string()))?;
+    }
+
+    // CA coordinates: 10f8.1 format (x1,y1,z1,x2,y2,z2,...)
+    let total_vals = 3 * protein.nres;
+    let mut val_idx = 0;
+    while val_idx < total_vals {
+        let nfloats = (total_vals - val_idx).min(10);
+        let mut line = String::with_capacity(80);
+        for k in 0..nfloats {
+            let res = (val_idx + k) / 3;
+            let coord = (val_idx + k) % 3;
+            let val = protein.ca[[coord, res]];
+            line.push_str(&format!("{:>8.1}", val));
+        }
+        writeln!(f, "{}", line).map_err(|e| DatError::Io(e.to_string()))?;
+        val_idx += nfloats;
+    }
+
+    // Section 2: SSE hierarchy (header only — read_dat skips content)
+    writeln!(f, ">>>> {:>5}{:>5}{:>5}{:>5}{:>5}  {}",
+             protein.code, protein.nres, protein.nseg, protein.na, protein.nb, secstr_str)
+        .map_err(|e| DatError::Io(e.to_string()))?;
+
+    // Section 3: domain decomposition tree
+    let ndom = protein.domain_tree.len();
+    // Header: >>>> at 0-3, space at 4, code at 5-9, ndom at 10-14
+    writeln!(f, ">>>> {:>5}{:>5}", protein.code, ndom)
+        .map_err(|e| DatError::Io(e.to_string()))?;
+
+    for node in &protein.domain_tree {
+        let type_char = match node.node_type {
+            NodeType::Root => '*',
+            NodeType::Split => '+',
+            NodeType::Minus => '-',
+        };
+        // pos 0-3: i4 index, pos 4: space, pos 5: type char
+        // pos 6-9: i4 left_child, pos 10-13: i4 right_child
+        // pos 14-18: 5 spaces (padding to position 19)
+        // pos 19+: i4 nseg, then i4 pairs (start, end)
+        let mut line = format!("{:>4} {:1}{:>4}{:>4}     {:>4}",
+            node.index, type_char, node.left_child, node.right_child, node.nseg);
+        for &(start, end) in &node.segments {
+            line.push_str(&format!("{:>4}{:>4}", start, end));
+        }
+        writeln!(f, "{}", line).map_err(|e| DatError::Io(e.to_string()))?;
+    }
+
+    Ok(())
 }
 
 /// Parse a fixed-width integer field.

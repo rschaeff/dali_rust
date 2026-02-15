@@ -231,6 +231,7 @@ pub fn initlexdonestart(nseg: usize, ss: &[i32]) -> (Vec<bool>, Vec<i32>) {
 }
 
 /// Trim destabilizing end residues from score table.
+#[inline(always)]
 pub fn trimtable(table: &[i32], table_stride: usize, ibeg: &mut i32, iend: &mut i32,
                   seglen: i32, minlen: i32) -> i32 {
     loop {
@@ -328,9 +329,9 @@ pub fn singletex(
                     ibeg_save = INFINIT;
                     iend_save = INFINIT;
                 } else {
-                    // Calculate per-residue score table
+                    // Calculate per-residue score table (stack-allocated)
                     let tbl_size = 101;
-                    let mut table = vec![0i32; tbl_size * tbl_size];
+                    let mut table = [0i32; 101 * 101];
                     for i in ibeg..(seglen - iend) {
                         for j in ibeg..(seglen - iend) {
                             let p_row = (a1 - 1 + i) as usize;
@@ -374,6 +375,7 @@ pub fn singletex(
 }
 
 /// Compute segment-segment doublet score.
+#[inline(always)]
 pub fn segsegscore(
     iseg: usize, jseg: usize, transires: i32, transjres: i32,
     a1: i32, a2: i32, b1: i32, b2: i32,
@@ -619,6 +621,7 @@ fn setstart1(
 }
 
 /// Compute segment score contributions (ess) and total estimate.
+#[inline(always)]
 pub fn get_ess(
     ns: usize, seglist: &[usize], ni: &[i32], ci: &[i32], ci_stride: usize,
     ex: &[i32], start: &[i32], start_stride: usize,
@@ -647,6 +650,7 @@ pub fn get_ess(
 }
 
 /// Get maximum score estimate for a segment pair.
+#[inline(always)]
 pub fn get_estimate(
     iseg: usize, jseg: usize,
     ni: &[i32], ci: &[i32], ci_stride: usize,

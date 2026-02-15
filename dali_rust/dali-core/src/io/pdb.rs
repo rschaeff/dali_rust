@@ -18,6 +18,7 @@ pub struct BackboneData {
     pub chain_id: String,
     pub residues: Vec<BackboneResidue>,
     pub sequence: String, // 1-letter codes
+    pub resid_map: Vec<i32>, // PDB residue serial numbers
 }
 
 /// Errors from PDB reading.
@@ -137,6 +138,7 @@ fn extract_backbone(
 
     let mut residues = Vec::new();
     let mut sequence = String::new();
+    let mut resid_map = Vec::new();
 
     for residue in target_chain.residues() {
         let resname = match residue.name() {
@@ -175,6 +177,7 @@ fn extract_backbone(
         }
 
         sequence.push(aa1);
+        resid_map.push(residue.serial_number() as i32);
         residues.push(BackboneResidue {
             n,
             ca,
@@ -195,5 +198,6 @@ fn extract_backbone(
         chain_id,
         residues,
         sequence,
+        resid_map,
     })
 }

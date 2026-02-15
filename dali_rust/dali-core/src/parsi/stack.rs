@@ -1,16 +1,19 @@
 //! Priority queue / stack for PARSI branch-and-bound search.
 //!
-//! Python-style sorted Vec instead of Fortran's bit-packed linked-list.
+//! Bit-packed SearchState: 1 bit per candidate per segment (~20 bytes/state
+//! vs ~32KB with flat arrays). Matches Fortran's compact representation.
 
-use std::collections::HashMap;
+use std::collections::BinaryHeap;
 use super::{NUL, INFINIT, MAXRES0};
 use super::scoring::{get_ess, get_estimate};
 
-/// A search state: score estimate + active candidates per segment.
+/// A search state: score estimate + bit-packed candidate masks.
+/// Bit layout: segments packed in seglist order, mi[seg] bits per segment.
+/// Bit set = candidate present, bit clear = candidate absent.
 #[derive(Clone)]
 pub struct SearchState {
     pub est: i32,
-    pub candidates: HashMap<usize, Vec<i32>>,  // seg_idx -> candidate indices
+    pub bits: Vec<u32>,
 }
 
 impl PartialEq for SearchState {
@@ -29,31 +32,84 @@ impl Ord for SearchState {
 }
 
 /// Score-ordered priority queue of search states.
-/// Maintains states sorted by estimate (ascending), so pop from end = best.
+/// Uses BinaryHeap (max-heap) for O(log n) push/pop.
+/// Stores bit-packing layout for pack/unpack operations.
 pub struct PriorityStack {
-    pub states: Vec<SearchState>,
+    pub states: BinaryHeap<SearchState>,
     pub overflow_limit: usize,
+    /// bit_offset[seg] = starting bit position for segment seg's candidates.
+    /// Only meaningful for segments in the active seglist.
+    bit_offset: Vec<usize>,
+    /// Number of u32 words needed per state's bit vector.
+    words_per_state: usize,
 }
 
 impl PriorityStack {
-    pub fn new() -> Self {
+    /// Create a new priority stack with bit-packing layout for the given domain.
+    /// `ns` segments from `seglist`, with `mi[seg]` max candidates per segment.
+    pub fn new(ns: usize, seglist: &[usize], mi: &[i32], nseg: usize) -> Self {
+        let mut bit_offset = vec![0usize; nseg];
+        let mut total_bits = 0usize;
+        for is_ in 0..ns {
+            let seg = seglist[is_];
+            bit_offset[seg] = total_bits;
+            total_bits += mi[seg] as usize;
+        }
         PriorityStack {
-            states: Vec::new(),
+            states: BinaryHeap::new(),
             overflow_limit: 10000,
+            bit_offset,
+            words_per_state: (total_bits + 31) / 32,
+        }
+    }
+
+    /// Pack flat ni/ci arrays into a bit-packed SearchState.
+    #[inline]
+    pub fn pack(&self, est: i32, ni: &[i32], ci: &[i32], nseg: usize,
+                ns: usize, seglist: &[usize]) -> SearchState {
+        let mut bits = vec![0u32; self.words_per_state];
+        for is_ in 0..ns {
+            let seg = seglist[is_];
+            let offset = self.bit_offset[seg];
+            for k in 0..ni[seg] as usize {
+                let cand = ci[k * nseg + seg] as usize;
+                let bp = offset + cand;
+                bits[bp / 32] |= 1 << (bp % 32);
+            }
+        }
+        SearchState { est, bits }
+    }
+
+    /// Unpack a bit-packed SearchState into flat ni/ci arrays.
+    #[inline]
+    pub fn unpack(&self, state: &SearchState, ni: &mut [i32], ci: &mut [i32],
+                  nseg: usize, ns: usize, seglist: &[usize], mi: &[i32]) {
+        for is_ in 0..ns {
+            let seg = seglist[is_];
+            ni[seg] = 0;
+            let offset = self.bit_offset[seg];
+            for ir in 0..mi[seg] as usize {
+                let bp = offset + ir;
+                if bp / 32 < state.bits.len()
+                    && state.bits[bp / 32] & (1 << (bp % 32)) != 0
+                {
+                    ci[ni[seg] as usize * nseg + seg] = ir as i32;
+                    ni[seg] += 1;
+                }
+            }
         }
     }
 
     pub fn push(&mut self, state: SearchState) {
-        let pos = self.states.partition_point(|s| s.est <= state.est);
-        self.states.insert(pos, state);
+        self.states.push(state);
     }
 
     pub fn pop_best(&mut self) -> Option<SearchState> {
-        if self.states.is_empty() { None } else { Some(self.states.pop().unwrap()) }
+        self.states.pop()
     }
 
     pub fn peek_best(&self) -> Option<&SearchState> {
-        self.states.last()
+        self.states.peek()
     }
 
     pub fn size(&self) -> usize {
@@ -66,8 +122,10 @@ impl PriorityStack {
 
     /// Remove all states with estimate <= cutoff.
     pub fn clearstack(&mut self, cutoff: i32) {
-        let idx = self.states.partition_point(|s| s.est <= cutoff);
-        self.states = self.states[idx..].to_vec();
+        let old = std::mem::take(&mut self.states);
+        self.states = old.into_vec().into_iter()
+            .filter(|s| s.est > cutoff)
+            .collect();
     }
 }
 
@@ -88,6 +146,10 @@ pub fn getnextbest(
     let mut ali = vec![0i32; nseg];
     let mut est = -INFINIT;
 
+    // Scratch buffers — allocated once, reused each iteration
+    let mut ni = vec![0i32; nseg];
+    let mut ci = vec![0i32; MAXRES0 * nseg];
+
     loop {
         if pstack.is_empty() {
             return (1, -INFINIT, ali);
@@ -103,16 +165,8 @@ pub fn getnextbest(
         let state = pstack.pop_best().unwrap();
         est = state.est;
 
-        // Build ni/ci from state
-        let mut ni = vec![0i32; nseg];
-        let mut ci = vec![0i32; MAXRES0 * nseg];
-        for &seg in &seglist[..ns] {
-            let cands = state.candidates.get(&seg).map(|v| v.as_slice()).unwrap_or(&[]);
-            ni[seg] = cands.len() as i32;
-            for (k, &c) in cands.iter().enumerate() {
-                ci[k * nseg + seg] = c;
-            }
-        }
+        // Unpack bit-packed state into scratch buffers
+        pstack.unpack(&state, &mut ni, &mut ci, nseg, ns, seglist, mi);
 
         // Check nmin/nmax
         let mut nmin = i32::MAX;
@@ -134,16 +188,16 @@ pub fn getnextbest(
             return (5, est, ali);
         }
 
-        // Split
-        split(est, ns, seglist, ex, scorecutoff, &ni, &ci, mi, pstack,
+        // Split (ni/ci are mutable scratch buffers, restored after each copyandput)
+        split(est, ns, seglist, ex, scorecutoff, &mut ni, &mut ci, mi, pstack,
               start, trans, lseqtl);
     }
 }
 
 /// Divide search space and push subgroups onto priority stack.
 pub fn split(
-    est: i32, ns: usize, seglist: &[usize], ex: &[i32], scorecutoff: i32,
-    ni: &[i32], ci: &[i32], mi: &[i32], pstack: &mut PriorityStack,
+    _est: i32, ns: usize, seglist: &[usize], ex: &[i32], scorecutoff: i32,
+    ni: &mut [i32], ci: &mut [i32], mi: &[i32], pstack: &mut PriorityStack,
     start: &[i32], trans: &[i32], lseqtl: bool,
 ) {
     let nseg = mi.len();
@@ -322,9 +376,10 @@ pub fn split(
     }
 }
 
+#[inline(always)]
 fn getemax_update(
     e: i32, emaxim: i32, lclosed: &[bool],
-    iseg: usize, jseg: usize, xseg: i32, yseg: i32,
+    iseg: usize, jseg: usize, _xseg: i32, _yseg: i32,
 ) -> Option<(i32, i32, i32)> {
     if e > emaxim {
         if lclosed[iseg] && !lclosed[jseg] {
@@ -339,50 +394,49 @@ fn getemax_update(
     None
 }
 
+/// Modify ni/ci in-place for xseg, re-estimate, pack and push.
+/// Restores original xseg state before returning.
 fn copyandput(
-    cand_list: &[i32], xseg: usize, ni: &[i32], ci: &[i32],
-    est: i32, ns: usize, seglist: &[usize], ess: &[i32],
+    cand_list: &[i32], xseg: usize, ni: &mut [i32], ci: &mut [i32],
+    _est: i32, ns: usize, seglist: &[usize], _ess: &[i32],
     ex: &[i32], start: &[i32], mi: &[i32], trans: &[i32],
     lseqtl: bool, scorecutoff: i32, pstack: &mut PriorityStack,
 ) {
     if cand_list.is_empty() { return; }
     let nseg = mi.len();
 
-    // Save original
+    // Save original xseg state (small: typically 5-40 entries)
     let old_ni_xseg = ni[xseg];
-    let mut old_ci_xseg = Vec::with_capacity(old_ni_xseg as usize);
-    for k in 0..old_ni_xseg as usize {
+    let old_ci_len = old_ni_xseg as usize;
+    let mut old_ci_xseg = Vec::with_capacity(old_ci_len);
+    for k in 0..old_ci_len {
         old_ci_xseg.push(ci[k * nseg + xseg]);
     }
 
-    // Create mutable copies
-    let mut ni_w = ni.to_vec();
-    let mut ci_w = ci.to_vec();
-
-    // Set xseg candidates
-    ni_w[xseg] = cand_list.len() as i32;
+    // Overwrite xseg candidates in-place
+    ni[xseg] = cand_list.len() as i32;
     for (k, &c) in cand_list.iter().enumerate() {
-        ci_w[k * nseg + xseg] = c;
+        ci[k * nseg + xseg] = c;
     }
 
-    // Re-estimate
-    let f = re_estimate(est, ns, seglist, ess, xseg, ex, &ni_w, &ci_w, start,
+    // Re-estimate with modified ni/ci
+    let f = re_estimate(_est, ns, seglist, _ess, xseg, ex, ni, ci, start,
                         mi, trans, lseqtl);
 
     if f > scorecutoff {
-        let mut candidates = HashMap::new();
-        for is_ in 0..ns {
-            let seg = seglist[is_];
-            let mut cands = Vec::new();
-            for k in 0..ni_w[seg] as usize {
-                cands.push(ci_w[k * nseg + seg]);
-            }
-            candidates.insert(seg, cands);
-        }
-        pstack.push(SearchState { est: f, candidates });
+        // Pack modified state to bits and push
+        let state = pstack.pack(f, ni, ci, nseg, ns, seglist);
+        pstack.push(state);
+    }
+
+    // Restore original xseg state
+    ni[xseg] = old_ni_xseg;
+    for (k, &c) in old_ci_xseg.iter().enumerate() {
+        ci[k * nseg + xseg] = c;
     }
 }
 
+#[inline(always)]
 fn re_estimate(
     _est: i32, ns: usize, seglist: &[usize], _ess: &[i32], _xseg: usize,
     ex: &[i32], ni: &[i32], ci: &[i32], start: &[i32],
@@ -413,53 +467,58 @@ pub fn declump(
     trans: &[i32], lseqtl: bool,
 ) {
     let nseg = mi.len();
-    let mut new_states = Vec::new();
+    let old_states = std::mem::take(&mut pstack.states).into_vec();
+    let mut new_states: Vec<SearchState> = Vec::with_capacity(old_states.len());
 
-    for state in &pstack.states {
+    // Scratch buffers — allocated once, reused for each state
+    let mut ni_tmp = vec![0i32; nseg];
+    let mut ci_tmp = vec![0i32; MAXRES0 * nseg];
+
+    for state in old_states {
         let est = state.est;
 
         if est > singletcutoff {
-            new_states.push(state.clone());
+            new_states.push(state);
             continue;
         }
 
-        // Remove ali candidates from state
+        // Unpack into scratch buffers
+        pstack.unpack(&state, &mut ni_tmp, &mut ci_tmp, nseg, ns, seglist, mi);
+
+        // Remove ali candidates
         let mut lchange = false;
-        let mut new_candidates = HashMap::new();
         let mut valid = true;
+
         for is_ in 0..ns {
             let seg = seglist[is_];
-            let mut cands: Vec<i32> = state.candidates.get(&seg)
-                .map(|v| v.clone())
-                .unwrap_or_default();
             let m = ali[seg];
-            // Remove candidate m if it maps to a non-NUL residue
-            if let Some(pos) = cands.iter().position(|&c| c == m) {
+            let count = ni_tmp[seg] as usize;
+            let mut found = None;
+            for k in 0..count {
+                if ci_tmp[k * nseg + seg] == m {
+                    found = Some(k);
+                    break;
+                }
+            }
+            if let Some(pos) = found {
                 if trans[m as usize * nseg + seg] != NUL {
-                    cands.remove(pos);
+                    // Swap with last (order doesn't matter for scoring)
+                    let last = count - 1;
+                    ci_tmp[pos * nseg + seg] = ci_tmp[last * nseg + seg];
+                    ni_tmp[seg] -= 1;
                     lchange = true;
                 }
             }
-            if cands.is_empty() {
+            if ni_tmp[seg] == 0 {
                 valid = false;
                 break;
             }
-            new_candidates.insert(seg, cands);
         }
 
         if !valid { continue; }
 
         let est_val;
         if lchange {
-            // Re-estimate
-            let mut ni_tmp = vec![0i32; nseg];
-            let mut ci_tmp = vec![0i32; MAXRES0 * nseg];
-            for (&seg, cands) in &new_candidates {
-                ni_tmp[seg] = cands.len() as i32;
-                for (k, &c) in cands.iter().enumerate() {
-                    ci_tmp[k * nseg + seg] = c;
-                }
-            }
             let (_, e) = get_ess(ns, seglist, &ni_tmp, &ci_tmp, nseg, ex, start, nseg,
                                   mi, trans, nseg, lseqtl);
             est_val = e;
@@ -468,10 +527,10 @@ pub fn declump(
         }
 
         if est_val > scorecutoff {
-            new_states.push(SearchState { est: est_val, candidates: new_candidates });
+            let new_state = pstack.pack(est_val, &ni_tmp, &ci_tmp, nseg, ns, seglist);
+            new_states.push(new_state);
         }
     }
 
-    new_states.sort();
-    pstack.states = new_states;
+    pstack.states = BinaryHeap::from(new_states);
 }

@@ -89,5 +89,6 @@ pub fn import_pdb<P: AsRef<Path>>(
         ca,
         sequence: backbone.sequence,
         domain_tree,
+        resid_map: backbone.resid_map,
     })
 }

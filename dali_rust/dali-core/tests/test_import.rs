@@ -1,4 +1,4 @@
-use dali_core::io::{read_dat, read_pdb, import_pdb};
+use dali_core::io::{read_dat, write_dat, read_pdb, import_pdb};
 
 const DAT_DIR_5: &str = concat!(
     env!("CARGO_MANIFEST_DIR"),
@@ -355,4 +355,59 @@ fn test_import_pipeline_18struct() {
 
     assert!(structures_ok >= 16, "Only {}/18 structures matched nres", structures_ok);
     assert!(seg_pct >= 50.0, "Segment overlap too low: {:.1}%", seg_pct);
+}
+
+/// Test write_dat round-trip: read .dat → write → read back → compare.
+#[test]
+fn test_write_dat_roundtrip() {
+    let cases = ["101mA", "1a00A", "1a87A", "1allA", "1binA"];
+
+    for code in &cases {
+        let dat_path = format!("{}/{}.dat", DAT_DIR_5, code);
+        let original = read_dat(&dat_path).unwrap_or_else(|e| {
+            panic!("Failed to read {}: {}", code, e);
+        });
+
+        // Write to temp file
+        let tmp_path = format!("/tmp/test_write_dat_{}.dat", code);
+        write_dat(&original, &tmp_path).unwrap_or_else(|e| {
+            panic!("Failed to write {}: {}", code, e);
+        });
+
+        // Read back
+        let roundtrip = read_dat(&tmp_path).unwrap_or_else(|e| {
+            panic!("Failed to read back {}: {}", code, e);
+        });
+
+        // Verify fields match
+        assert_eq!(roundtrip.code, original.code, "{}: code mismatch", code);
+        assert_eq!(roundtrip.nres, original.nres, "{}: nres mismatch", code);
+        assert_eq!(roundtrip.nseg, original.nseg, "{}: nseg mismatch", code);
+        assert_eq!(roundtrip.na, original.na, "{}: na mismatch", code);
+        assert_eq!(roundtrip.nb, original.nb, "{}: nb mismatch", code);
+
+        // CA coordinates within tolerance (f8.1 format loses precision)
+        for j in 0..original.nres {
+            for d in 0..3 {
+                let diff = (roundtrip.ca[[d, j]] - original.ca[[d, j]]).abs();
+                assert!(diff < 0.1, "{}: CA[{},{}] diff={:.3}", code, d, j, diff);
+            }
+        }
+
+        // Domain tree
+        assert_eq!(roundtrip.domain_tree.len(), original.domain_tree.len(),
+                   "{}: domain tree length mismatch", code);
+        for (i, (rt, orig)) in roundtrip.domain_tree.iter()
+            .zip(original.domain_tree.iter()).enumerate()
+        {
+            assert_eq!(rt.nseg, orig.nseg,
+                       "{}: domain[{}] nseg mismatch ({} vs {})", code, i, rt.nseg, orig.nseg);
+            assert_eq!(rt.segments, orig.segments,
+                       "{}: domain[{}] segments mismatch", code, i);
+        }
+
+        // Clean up
+        let _ = std::fs::remove_file(&tmp_path);
+        eprintln!("  {}: write_dat roundtrip OK", code);
+    }
 }

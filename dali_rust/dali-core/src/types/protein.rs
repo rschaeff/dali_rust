@@ -52,6 +52,14 @@ impl NodeType {
             _ => NodeType::Minus,
         }
     }
+
+    pub fn to_char(self) -> char {
+        match self {
+            NodeType::Root => '*',
+            NodeType::Split => '+',
+            NodeType::Minus => '-',
+        }
+    }
 }
 
 /// A node in the hierarchical domain decomposition tree.
@@ -78,6 +86,7 @@ pub struct Protein {
     pub ca: Array2<f64>,             // (3, nres) CA coordinates
     pub sequence: String,            // amino acid sequence (if available)
     pub domain_tree: Vec<DomainNode>, // hierarchical decomposition
+    pub resid_map: Vec<i32>,         // PDB residue serial numbers (1-based); sequential for .dat-loaded
 }
 
 impl Protein {

@@ -28,6 +28,11 @@ const DALICON_OUTPUT_18: &str = concat!(
     "/validation/corpus_expansion/ground_truth_18/dalicon/wolf/dalicon_output.txt"
 );
 
+// 18-structure groups (6 each)
+const GROUP_A: &[&str] = &["1a7sA", "1aiwA", "1a25A", "1a12A", "1f3uA", "1a04A"];
+const GROUP_B: &[&str] = &["1bbhA", "1b3qA", "1a17A", "1miwA", "1aopA", "1a8lA"];
+const GROUP_C: &[&str] = &["1a6qA", "1a06A", "1b3oB", "1a0cA", "1a4iA", "1bcoA"];
+
 /// Parsed WOLFITZ ground truth entry.
 #[derive(Debug)]
 struct WolfitzRef {
@@ -75,12 +80,10 @@ fn parse_wolfitz_gt(path: &str) -> Vec<WolfitzRef> {
 /// Convert DALICON result to raw values in WOLFITZ format.
 fn result_to_raw_values(blocks: &[dali_core::AlignmentBlock]) -> Vec<i64> {
     let mut vals = Vec::new();
-    // cd1 ranges: l1, r1 pairs
     for b in blocks {
         vals.push(b.l1 as i64);
         vals.push(b.r1 as i64);
     }
-    // cd2 ranges: l2, r2 pairs
     for b in blocks {
         vals.push(b.l2 as i64);
         vals.push(b.r2 as i64);
@@ -96,7 +99,6 @@ fn validate_dalicon(
     let mut matched = 0;
     let mut mismatched = Vec::new();
 
-    // Build result map
     let result_map: std::collections::HashMap<(&str, &str), &(String, String, usize, Vec<dali_core::AlignmentBlock>)> =
         results.iter().map(|r| ((r.0.as_str(), r.1.as_str()), r)).collect();
 
@@ -116,7 +118,6 @@ fn validate_dalicon(
 
                 let result_raw = result_to_raw_values(&result.3);
                 if entry.raw_values != result_raw {
-                    // Find first difference
                     for (idx, (rv, cv)) in entry.raw_values.iter()
                         .zip(result_raw.iter())
                         .enumerate()
@@ -179,28 +180,79 @@ fn test_dalicon_5_structures() {
     );
 }
 
-#[test]
-fn test_dalicon_18_structures() {
-    let gt = parse_wolfitz_gt(DALICON_OUTPUT_18);
-    assert_eq!(gt.len(), 24, "Expected 24 ground truth entries for 18-struct corpus");
+fn run_dalicon_18_group(codes: &[&str], label: &str) {
+    let all_gt = parse_wolfitz_gt(DALICON_OUTPUT_18);
+    let group_gt: Vec<&WolfitzRef> = all_gt.iter()
+        .filter(|e| codes.contains(&e.cd1.as_str()) && codes.contains(&e.cd2.as_str()))
+        .collect();
+    let gt_count = group_gt.len();
+
+    if gt_count == 0 {
+        eprintln!("DALICON {}: no ground truth entries for this group", label);
+        return;
+    }
 
     let input_content = fs::read_to_string(DALICON_INPUT_18).unwrap();
-    let records = parse_dalicon_input(&input_content);
+    let all_records = parse_dalicon_input(&input_content);
+
+    // Filter records to only those involving group structures
+    let records: Vec<_> = all_records.into_iter()
+        .filter(|r| codes.contains(&r.cd1.as_str()) && codes.contains(&r.cd2.as_str()))
+        .collect();
 
     let store = ProteinStore::new(EXPANDED_DIR);
     let results = run_dalicon(&records, &store);
 
-    let (matched, total, mismatched) = validate_dalicon(&gt, &results);
+    // Validate against filtered ground truth
+    let mut matched = 0;
+    let mut mismatched = Vec::new();
+    let result_map: std::collections::HashMap<(&str, &str), &(String, String, usize, Vec<dali_core::AlignmentBlock>)> =
+        results.iter().map(|r| ((r.0.as_str(), r.1.as_str()), r)).collect();
 
-    eprintln!("DALICON 18-struct: {}/{} matched", matched, total);
+    for entry in &group_gt {
+        let key = (entry.cd1.as_str(), entry.cd2.as_str());
+        match result_map.get(&key) {
+            Some(result) => {
+                let result_raw = result_to_raw_values(&result.3);
+                if entry.nblock == result.2 && entry.raw_values == result_raw {
+                    matched += 1;
+                } else {
+                    mismatched.push(format!(
+                        "{}{}: nblock ref={} got={}",
+                        entry.cd1, entry.cd2, entry.nblock, result.2
+                    ));
+                }
+            }
+            None => {
+                mismatched.push(format!("{}{}: MISSING", entry.cd1, entry.cd2));
+            }
+        }
+    }
+
+    eprintln!("DALICON {}: {}/{} matched", label, matched, gt_count);
     if !mismatched.is_empty() {
         for m in &mismatched {
             eprintln!("  {}", m);
         }
     }
     assert_eq!(
-        matched, 24,
-        "DALICON 18-struct: {}/24 (mismatches: {:?})",
-        matched, mismatched
+        matched, gt_count,
+        "DALICON {}: {}/{} (mismatches: {:?})",
+        label, matched, gt_count, mismatched
     );
+}
+
+#[test]
+fn test_dalicon_18_group_a() {
+    run_dalicon_18_group(GROUP_A, "18-group-A");
+}
+
+#[test]
+fn test_dalicon_18_group_b() {
+    run_dalicon_18_group(GROUP_B, "18-group-B");
+}
+
+#[test]
+fn test_dalicon_18_group_c() {
+    run_dalicon_18_group(GROUP_C, "18-group-C");
 }

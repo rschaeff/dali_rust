@@ -78,6 +78,85 @@ def test_run_wolf_path():
         print(f"    {r}")
 
 
+def test_resid_map():
+    """resid_map returns sequential IDs for .dat-loaded, PDB IDs for imported."""
+    # .dat-loaded: sequential 1..=nres
+    p_dat = dali.read_dat(os.path.join(DAT_DIR, "101mA.dat"))
+    rmap = p_dat.resid_map
+    assert len(rmap) == p_dat.nres, f"expected len {p_dat.nres}, got {len(rmap)}"
+    assert rmap == list(range(1, p_dat.nres + 1)), "expected sequential for .dat-loaded"
+
+    # PDB-imported: should be PDB residue numbers
+    if os.path.exists(PDB_PATH):
+        p_pdb = dali.import_pdb(PDB_PATH, "A", "101m")
+        rmap_pdb = p_pdb.resid_map
+        assert len(rmap_pdb) == p_pdb.nres
+        assert all(isinstance(x, int) for x in rmap_pdb)
+        print(f"  resid_map: dat={rmap[:3]}...  pdb={rmap_pdb[:3]}...")
+    else:
+        print(f"  resid_map: dat={rmap[:3]}... (PDB skipped)")
+
+
+def test_write_dat_roundtrip():
+    """write_dat produces a file that read_dat can parse back correctly."""
+    import tempfile
+    p_orig = dali.read_dat(os.path.join(DAT_DIR, "101mA.dat"))
+    with tempfile.NamedTemporaryFile(suffix=".dat", delete=False) as f:
+        tmp_path = f.name
+    try:
+        p_orig.write_dat(tmp_path)
+        p_back = dali.read_dat(tmp_path)
+        assert p_back.code == p_orig.code, f"code mismatch: {p_back.code} vs {p_orig.code}"
+        assert p_back.nres == p_orig.nres, f"nres mismatch: {p_back.nres} vs {p_orig.nres}"
+        assert p_back.nseg == p_orig.nseg, f"nseg mismatch: {p_back.nseg} vs {p_orig.nseg}"
+        assert p_back.na == p_orig.na, f"na mismatch: {p_back.na} vs {p_orig.na}"
+        assert p_back.nb == p_orig.nb, f"nb mismatch: {p_back.nb} vs {p_orig.nb}"
+        # CA coords
+        ca_orig = p_orig.ca_coords()
+        ca_back = p_back.ca_coords()
+        max_diff = np.abs(ca_orig - ca_back).max()
+        assert max_diff < 0.1, f"CA coord max diff {max_diff:.3f} >= 0.1"
+        print(f"  write_dat roundtrip: OK (max CA diff={max_diff:.4f})")
+    finally:
+        os.unlink(tmp_path)
+
+
+def test_align_pdb():
+    """align_pdb returns AlignResult with rotation, translation, alignments."""
+    pdb_dir = os.path.join(DAT_DIR, "pdb")
+    q_path = os.path.join(pdb_dir, "pdb101m.ent.gz")
+    t_path = os.path.join(pdb_dir, "pdb1a00.ent.gz")
+    if not (os.path.exists(q_path) and os.path.exists(t_path)):
+        print(f"  align_pdb: SKIPPED (PDB files not found)")
+        return
+
+    result = dali.align_pdb(q_path, t_path, "A", "A", "101m", "1a00")
+    assert result is not None, "expected AlignResult, got None"
+    assert result.zscore > 0, f"expected zscore > 0, got {result.zscore}"
+    assert result.n_aligned > 0, f"expected n_aligned > 0, got {result.n_aligned}"
+    assert len(result.alignments) == result.n_aligned
+    assert len(result.rotation) == 3
+    assert all(len(row) == 3 for row in result.rotation)
+    assert len(result.translation) == 3
+    assert len(result.blocks) > 0
+
+    # Verify rotation is a proper rotation matrix (det ~= 1, R^T R ~= I)
+    R = np.array(result.rotation)
+    det = np.linalg.det(R)
+    assert abs(det - 1.0) < 0.01, f"rotation det={det:.4f}, expected ~1.0"
+    eye = R.T @ R
+    ident_err = np.abs(eye - np.eye(3)).max()
+    assert ident_err < 0.01, f"R^T R not identity, max err={ident_err:.4f}"
+
+    # Alignments should be in PDB numbering (positive integers)
+    for q_res, t_res in result.alignments:
+        assert isinstance(q_res, int) and isinstance(t_res, int)
+
+    print(f"  align_pdb: {result}")
+    print(f"    n_aligned={result.n_aligned}, nblock={len(result.blocks)}")
+    print(f"    first 3 pairs: {result.alignments[:3]}")
+
+
 if __name__ == "__main__":
     tests = [
         ("read_dat", test_read_dat),
@@ -86,6 +165,9 @@ if __name__ == "__main__":
         ("ProteinStore", test_protein_store),
         ("compare_pair", test_compare_pair),
         ("run_wolf_path", test_run_wolf_path),
+        ("resid_map", test_resid_map),
+        ("write_dat_roundtrip", test_write_dat_roundtrip),
+        ("align_pdb", test_align_pdb),
     ]
 
     passed = 0

@@ -4,7 +4,7 @@ use std::collections::HashMap;
 use super::{NUL, INFINIT, EXDIM, MAXRES0, BL};
 use super::scoring::{get_ess, get_estimate, update_ex, initlexdonestart,
                       singletex, doubletex};
-use super::stack::{PriorityStack, SearchState, getnextbest, declump};
+use super::stack::{PriorityStack, getnextbest, declump};
 
 /// Main PARSI alignment — bottom-up over domain tree.
 #[allow(clippy::too_many_arguments)]
@@ -136,7 +136,7 @@ pub fn align(
 
         } else {
             // Full branch-and-bound
-            let mut pstack = PriorityStack::new();
+            let mut pstack = PriorityStack::new(ns, &seglist, &mi_w, nseg);
 
             // loadstack: initialize priority queue from child alignments
             loadstack(&mut pstack, &ali_start, &ali_nali, &ali_save,
@@ -263,8 +263,11 @@ fn dostack(
                 }
                 let idx_10pct = pstack.size() / 10;
                 if idx_10pct < pstack.size() {
-                    let k = pstack.states[pstack.size() - idx_10pct - 1].est;
-                    pstack.clearstack(k);
+                    // Find the cutoff estimate at the 10th percentile boundary
+                    let mut ests: Vec<i32> = pstack.states.iter().map(|s| s.est).collect();
+                    let k_idx = ests.len() - idx_10pct - 1;
+                    ests.select_nth_unstable(k_idx);
+                    pstack.clearstack(ests[k_idx]);
                 }
                 continue;
             }
@@ -768,16 +771,8 @@ fn loadstack(
             let (_, est) = get_ess(ns, seglist, &ni_work, &ci_work, nseg,
                                     ex, start, nseg, mi, trans, nseg, lseqtl);
             if est > cutoff {
-                let mut candidates = HashMap::new();
-                for is_ in 0..ns {
-                    let seg = seglist[is_];
-                    let mut cands = Vec::new();
-                    for k in 0..ni_work[seg] as usize {
-                        cands.push(ci_work[k * nseg + seg]);
-                    }
-                    candidates.insert(seg, cands);
-                }
-                pstack.push(SearchState { est, candidates });
+                let state = pstack.pack(est, &ni_work, &ci_work, nseg, ns, seglist);
+                pstack.push(state);
             }
         }
     }
@@ -932,7 +927,7 @@ fn perresiduescore(
     );
 
     // Build priority stack — separate first segment candidates
-    let mut pstack = PriorityStack::new();
+    let mut pstack = PriorityStack::new(ns, seglist, &mi_local, nseg);
     let (_ess, _est_total) = get_ess(ns, seglist, &ni, &ci, nseg,
                                        &ex, &start, nseg,
                                        &mi_local, &trans_l, nseg, lseqtl);
@@ -946,16 +941,8 @@ fn perresiduescore(
                                    &ex, &start, nseg,
                                    &mi_local, &trans_l, nseg, lseqtl);
         if est_i > cutoff {
-            let mut candidates = HashMap::new();
-            for is_ in 0..ns {
-                let seg = seglist[is_];
-                let mut cands = Vec::new();
-                for k in 0..ni[seg] as usize {
-                    cands.push(ci[k * nseg + seg]);
-                }
-                candidates.insert(seg, cands);
-            }
-            pstack.push(SearchState { est: est_i, candidates });
+            let state = pstack.pack(est_i, &ni, &ci, nseg, ns, seglist);
+            pstack.push(state);
         }
     }
     // Restore ni for first seg
