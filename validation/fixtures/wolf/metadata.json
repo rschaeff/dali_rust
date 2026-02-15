@@ -1,0 +1,14 @@
+{
+  "command": "/home/rschaeff/src/Dali_v5/DaliLite.v5/bin/serialcompare /home/rschaeff/src/Dali_v5/DaliLite.v5/DAT/ /home/rschaeff/src/Dali_v5/DaliLite.v5/DAT/ WOLF",
+  "return_code": 0,
+  "elapsed_seconds": 0.16591858863830566,
+  "n_structures": 5,
+  "n_fort_files": 1,
+  "structures": [
+    "101mA",
+    "1a00A",
+    "1a87A",
+    "1allA",
+    "1binA"
+  ]
+}

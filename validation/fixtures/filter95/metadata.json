@@ -1,0 +1,6 @@
+{
+  "command": "/home/rschaeff/src/Dali_v5/DaliLite.v5/bin/serialcompare /home/rschaeff/src/Dali_v5/DaliLite.v5/DAT/ /home/rschaeff/src/Dali_v5/DaliLite.v5/DAT/ FILTER95 < /tmp/dali_capture_iwakclq7/filter_stdin",
+  "return_code": 0,
+  "elapsed_seconds": 0.06876564025878906,
+  "n_fort_files": 1
+}

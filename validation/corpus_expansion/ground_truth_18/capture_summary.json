@@ -1,0 +1,29 @@
+{
+  "dali_root": "/home/rschaeff/src/Dali_v5/DaliLite.v5",
+  "dat_dir": "/home/rschaeff/dev/dali_cl/validation/corpus_expansion/dat/",
+  "structures": [
+    "1a7sA",
+    "1aiwA",
+    "1a25A",
+    "1a12A",
+    "1f3uA",
+    "1a04A",
+    "1bbhA",
+    "1b3qA",
+    "1a17A",
+    "1miwA",
+    "1aopA",
+    "1a8lA",
+    "1a6qA",
+    "1a06A",
+    "1b3oB",
+    "1a0cA",
+    "1a4iA",
+    "1bcoA"
+  ],
+  "stages_captured": [
+    "parsi",
+    "filter95"
+  ],
+  "compare_exe": "/home/rschaeff/src/Dali_v5/DaliLite.v5/bin/serialcompare"
+}

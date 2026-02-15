@@ -1,0 +1,3 @@
+[workspace]
+members = ["dali-core", "dali-python"]
+resolver = "2"

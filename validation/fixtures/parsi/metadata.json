@@ -1,0 +1,7 @@
+{
+  "command": "/home/rschaeff/src/Dali_v5/DaliLite.v5/bin/serialcompare /home/rschaeff/src/Dali_v5/DaliLite.v5/DAT/ /home/rschaeff/src/Dali_v5/DaliLite.v5/DAT/ PARSI",
+  "return_code": 0,
+  "elapsed_seconds": 0.7871558666229248,
+  "n_structures": 5,
+  "n_fort_files": 1
+}

@@ -1,0 +1,101 @@
+<TITLE>Dali: test</TITLE><A name=101mA>
+<h1>Results: test</h1>
+<h2>Query: <a name="101mA">101mA</a></h2>
+ MOLECULE: MYOGLOBIN;                                                 
+<P><A NAME="summary">
+Select neighbours (check boxes) for viewing as multiple structural alignment or 3D superimposition. 
+The list of neighbours is sorted by Z-score. Similarities with a Z-score lower than 2 are spurious.
+Each neighbour has links to pairwise structural alignment with the query structure, 
+ and to the PDB format coordinate file where the neighbour
+is superimposed onto the query structure. 
+
+<form NAME="optionform" METHOD="POST" TARGET="_blank"/>
+<input TYPE="hidden" NAME="title" VALUE="test">
+<input TYPE="hidden" NAME="jobid" VALUE=test>
+<input TYPE="hidden" NAME="query_sequence" VALUE="MVLSEGEWQLVLHVWAKVEADVAGHGQDILIRLFKSHPETLEKFDRVKHLKTEAEMKASEDLKKHGVTVLTALGAILKKKGHHEAELKPLAQSHATKHKIPIKYLEFISEAIIHVLHSRHPGNFGADAQGAMNKALELFRKDIAAKYKELGYQG"> 
+<input TYPE="hidden" NAME="query_dssp" VALUE="LLLLHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHLHHHHHHLLLLLLLLLHHHHHHLHHHHHHHHHHHHHHHHHHLLLLLLHHHHHHHHHHHHHLLLLLHHHHHHHHHHHHHHHHHHLHHHLLHHHHHHHHHHHHHHHHHHHHHHHHLLLLL"> 
+<input TYPE="hidden" NAME="cd1" VALUE=101mA>
+<input TYPE="hidden" NAME="pdbresnos" VALUE="154    0     1     2     3     4     5     6     7     8     9    10    11    12    13    14    15    16    17    18    19    20    21    22    23    24    25    26    27    28    29    30    31    32    33    34    35    36    37    38    39    40    41    42    43    44    45    46    47    48    49    50    51    52    53    54    55    56    57    58    59    60    61    62    63    64    65    66    67    68    69    70    71    72    73    74    75    76    77    78    79    80    81    82    83    84    85    86    87    88    89    90    91    92    93    94    95    96    97    98    99   100   101   102   103   104   105   106   107   108   109   110   111   112   113   114   115   116   117   118   119   120   121   122   123   124   125   126   127   128   129   130   131   132   133   134   135   136   137   138   139   140   141   142   143   144   145   146   147   148   149   150   151   152   153 
+">
+<input TYPE="hidden" NAME="cd2list" VALUE="dummy">
+<input TYPE="button" NAME="D1" VALUE="Structural Alignment" ONCLICK="return mview();"/> 
+<INPUT TYPE="CHECKBOX" NAME="expand_gaps" VALUE=1 CHECKED /> Expand gaps 
+<input TYPE="button" NAME="D3" VALUE="3D Superimposition (PV)" ONCLICK="return openViewer();"/> 
+<input TYPE="button" NAME="D4" VALUE="SANS" ONCLICK="return sans();"/>
+<input TYPE="button" NAME="D5" VALUE="PANZ" ONCLICK="return sanspanz();"/>
+<input TYPE="button" NAME="D3" VALUE="Pfam" ONCLICK="return poppush();"/>
+<input TYPE="reset" VALUE="Reset Selection"/>
+<h2>Summary</h2>
+<PRE>
+    No:  Chain   Z    rmsd lali nres  %id PDB  Description
+<INPUT TYPE="CHECKBOX" NAME="cd2list" VALUE="cd2=1a00A sequence=VLSPADKTNVKAAWGKVGAHAGEYGAEALERMFLSFPTTKTYFPHFdlSHGSAQVKGHGKKVADALTNAVAHVDDMPNALSALSDLHAHKLRVDPVNFKLLSHCLLVTLAAHLPAEFTPAVHASLDKFLASVSTVLTSKYR dssp=LLLHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHLHHHHHHLLLLllLLLLHHHHHHHHHHHHHHHHHHHLHHHHHHHHHHHHHHHHHLLLLLLHHHHHHHHHHHHHHHHHLLLLLLHHHHHHHHHHHHHHHHHHLLLLL qstarts=1,55 sstarts=0,48 lengths=46,93 u=0.562913,0.703891,-0.433205,-0.097483,-0.463933,-0.880490,-0.820747,0.537869,-0.192537 t=-60,37,54 segments=1-46,49-141 compnd=_HEMOGLOBIN_(ALPHA_CHAIN);>"   <A HREF=#alignment-1>1</A>:  1a00-A 20.6  1.5  139   141   26 <A HREF="http://ekhidna2.biocenter.helsinki.fi/cgi-bin/daliviewer/readpdb.cgi?html=1&jobid=pdb&pdbid=1a00&u=0.562913,0.703891,-0.433205,-0.097483,-0.463933,-0.880490,-0.820747,0.537869,-0.192537&t=-60,37,54">PDB</A>  MOLECULE: HEMOGLOBIN (ALPHA CHAIN);                                  
+
+</form>
+</PRE>
+<A NAME="alignments">
+<h2>Pairwise Structural Alignments </h2>
+Notation: three-state secondary structure definitions by DSSP (reduced to H=helix, E=sheet, L=coil) are shown above the amino acid sequence. Structurally equivalent residues are in uppercase, structurally non-equivalent residues (e.g. in loops) are in lowercase. Amino acid identities are marked by vertical bars.
+<a name=alignment-1><h3> No 1: Query=101mA Sbjct=1a00A Z-score=20.6</h3>
+
+<A HREF="#101mA">back to top</A>
+<PRE>
+DSSP  lLLLHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHLHHHHHHLLLLlllllhhhHHHLH
+Query mVLSEGEWQLVLHVWAKVEADVAGHGQDILIRLFKSHPETLEKFDRVkhlkteaeMKASE   60
+ident  |||      |   | || |     |   | | | | | |   |              | 
+Sbjct -VLSPADKTNVKAAWGKVGAHAGEYGAEALERMFLSFPTTKTYFPHF------dlSHGSA   53
+DSSP  -LLLHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHLHHHHHHLLLL------llLLLLH
+
+
+DSSP  HHHHHHHHHHHHHHHHHLLLLLLHHHHHHHHHHHHHLLLLLHHHHHHHHHHHHHHHHHHL
+Query DLKKHGVTVLTALGAILKKKGHHEAELKPLAQSHATKHKIPIKYLEFISEAIIHVLHSRH  120
+ident   | ||  |  ||             |  |   || |           |      |    
+Sbjct QVKGHGKKVADALTNAVAHVDDMPNALSALSDLHAHKLRVDPVNFKLLSHCLLVTLAAHL  113
+DSSP  HHHHHHHHHHHHHHHHHHLHHHHHHHHHHHHHHHHHLLLLLLHHHHHHHHHHHHHHHHHL
+
+
+DSSP  HHHLLHHHHHHHHHHHHHHHHHHHHHHHhlllll
+Query PGNFGADAQGAMNKALELFRKDIAAKYKelgyqg  154
+ident |  |         | |         ||       
+Sbjct PAEFTPAVHASLDKFLASVSTVLTSKYR------  141
+DSSP  LLLLLHHHHHHHHHHHHHHHHHHLLLLL------
+
+
+</PRE>
+</PRE>
+<HR>
+<script>
+
+function openViewer() {
+    document.optionform.action = "/cgi-bin/daliviewer/viewer.cgi";
+    document.optionform.target = "_blank";
+    document.optionform.submit();
+    return true;
+}
+
+function poppush() {
+        document.optionform.action = "/cgi-bin/daliviewer/test_poppush.cgi";
+        document.optionform.target = "_blank";
+        document.optionform.submit();
+}
+
+function mview() {
+	document.optionform.action = "/cgi-bin/daliviewer/strali.cgi";
+	document.optionform.target = "_blank";
+	document.optionform.submit();
+}
+
+function sans() {
+        document.optionform.action = "/cgi-bin/daliviewer/call_sans.cgi";
+        document.optionform.target = "_blank";
+        document.optionform.submit();
+}
+
+function sanspanz() {
+        document.optionform.action = "/cgi-bin/daliviewer/call_sanspanz.cgi";
+        document.optionform.target = "_blank";
+        document.optionform.submit();
+}
+
+</script>
+
+

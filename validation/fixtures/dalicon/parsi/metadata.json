@@ -1,0 +1,6 @@
+{
+  "command": "/home/rschaeff/src/Dali_v5/DaliLite.v5/bin/serialcompare /home/rschaeff/src/Dali_v5/DaliLite.v5/DAT/ /home/rschaeff/src/Dali_v5/DaliLite.v5/DAT/ DALICON T < /tmp/dali_capture_iwakclq7/dalicon_stdin",
+  "return_code": 0,
+  "elapsed_seconds": 1.177790641784668,
+  "n_fort_files": 1
+}

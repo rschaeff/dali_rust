@@ -1,0 +1,7 @@
+{
+  "command": "/home/rschaeff/src/Dali_v5/DaliLite.v5/bin/serialcompare /home/rschaeff/dev/dali_cl/validation/corpus_expansion/dat/ /home/rschaeff/dev/dali_cl/validation/corpus_expansion/dat/ PARSI",
+  "return_code": 0,
+  "elapsed_seconds": 20.536999464035034,
+  "n_structures": 18,
+  "n_fort_files": 1
+}

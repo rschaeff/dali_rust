@@ -1,0 +1,21 @@
+# Job: test
+# Query: 1a87A
+# No:  Chain   Z    rmsd lali nres  %id PDB  Description
+   1:  1all-A  7.4  2.7  107   160    8   MOLECULE: ALLOPHYCOCYANIN;                                           
+
+# Structural equivalences
+   1: 1a87-A 1all-A   169 - 180 <=>   31 -  42   (ASN  259  - TRP  270  <=> SER   33  - MET   44 )                          
+   1: 1a87-A 1all-A   181 - 184 <=>   44 -  47   (LYS  271  - ASN  274  <=> GLY   46  - GLU   49 )                          
+   1: 1a87-A 1all-A   185 - 195 <=>   50 -  60   (ALA  275  - LEU  285  <=> ILE   52  - LYS   62 )                          
+   1: 1a87-A 1all-A   196 - 199 <=>   62 -  65   (GLY  286  - PHE  289  <=> PRO   64  - VAL   67 )                          
+   1: 1a87-A 1all-A   201 - 221 <=>   77 -  97   (VAL  291  - THR  311  <=> THR   81  - ALA  101 )                          
+   1: 1a87-A 1all-A   222 - 225 <=>  101 - 104   (GLY  312  - GLY  315  <=> THR  105  - GLU  108 )                          
+   1: 1a87-A 1all-A   226 - 229 <=>  106 - 109   (PRO  316  - LEU  319  <=> ILE  110  - VAL  113 )                          
+   1: 1a87-A 1all-A   233 - 258 <=>  114 - 139   (SER  323  - SER  348  <=> MET  118  - LEU  143 )                          
+   1: 1a87-A 1all-A   260 - 280 <=>  140 - 160   (LEU  350  - ILE  370  <=> LEU  144  - SER  174 )                          
+
+# Translation-rotation matrices
+-matrix  "1a87-A 1all-A  U(1,.)  -0.783331  0.468831 -0.408156           40.419842"
+-matrix  "1a87-A 1all-A  U(2,.)   0.614892  0.680672 -0.398239           42.573639"
+-matrix  "1a87-A 1all-A  U(3,.)   0.091114 -0.562924 -0.821471           57.289490"
+

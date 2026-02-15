@@ -1,0 +1,15 @@
+{
+  "dali_root": "/home/rschaeff/src/Dali_v5/DaliLite.v5",
+  "dat_dir": "/home/rschaeff/src/Dali_v5/DaliLite.v5/DAT/",
+  "structures": [
+    "101mA",
+    "1a00A",
+    "1a87A",
+    "1allA",
+    "1binA"
+  ],
+  "stages_captured": [
+    "e2e"
+  ],
+  "compare_exe": "/home/rschaeff/src/Dali_v5/DaliLite.v5/bin/serialcompare"
+}

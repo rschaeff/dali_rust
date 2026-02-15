@@ -1,0 +1,6 @@
+{
+  "command": "/home/rschaeff/src/Dali_v5/DaliLite.v5/bin/serialcompare /home/rschaeff/dev/dali_cl/validation/corpus_expansion/dat/ /home/rschaeff/dev/dali_cl/validation/corpus_expansion/dat/ DP < /tmp/dali_capture_b4l48u8v/dp_stdin",
+  "return_code": 0,
+  "elapsed_seconds": 0.9439501762390137,
+  "n_fort_files": 1
+}

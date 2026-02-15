@@ -1,0 +1,13 @@
+[package]
+name = "dali-core"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+ndarray = "0.16"
+approx = "0.5"
+pdbtbx = "0.12"
+flate2 = "1"
+
+[dev-dependencies]
+approx = "0.5"

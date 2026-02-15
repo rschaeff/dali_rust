@@ -1,0 +1,28 @@
+# Python
+__pycache__/
+*.pyc
+
+# Rust build artifacts
+dali_rust/target/
+
+# Debug/scratch files
+debug_*.py
+compare_parsi.py
+*.log
+list1
+list2
+
+# Output logs from development
+wolf_output_new.txt
+dalicon_output_new.txt
+dp_expanded_output.txt
+parsi_targeted_output.txt
+
+# Fortran debug captures
+debug_fortran/
+
+# Corpus expansion working directory
+validation/corpus_expansion/work/
+
+# Claude Code
+.claude/

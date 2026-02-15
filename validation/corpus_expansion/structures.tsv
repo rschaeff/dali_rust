@@ -1,0 +1,19 @@
+arch_id	fold_name	ecod_domain_id	pdb_code	chain_id	pdb_range	approx_nres
+a.1	cradle loop barrel	e1a7sA1	1a7s	A	A:1-225	225
+a.2	WW domain	e1aiwA1	1aiw	A	A:1-62	62
+a.3	Ig-like	e1a25A1	1a25	A	A:157-288	132
+a.4	beta-propeller	e1a12A1	1a12	A	A:21-421	401
+a.5	triple barrel	e1f3uA1	1f3u	A	A:2-119	118
+a.6	HTH	e1a04A1	1a04	A	A:150-216	67
+a.7	four-helix bundle	e1bbhA1	1bbh	A	A:1-131	131
+a.8	ROP-like	e1b3qA2	1b3q	A	A:293-354	62
+a.9	alpha hairpins	e1a17A1	1a17	A	A:19-177	159
+a.10	PDEase-like	e1miwA1	1miw	A	A:140-404	265
+a.11	alpha-beta plait	e1aopA1	1aop	A	A:81-145	65
+a.12	thioredoxin-like	e1a8lA1	1a8l	A	A:1-119	119
+a.13	Ntn/PP2C	e1a6qA2	1a6q	A	A:2-296	295
+a.14	protein kinase	e1a06A1	1a06	A	A:10-316	307
+a.15	CBS domain	e1b3oB1	1b3o	B	B:113-239	127
+a.16	TIM barrel	e1a0cA1	1a0c	A	A:1-437	437
+a.17	Rossmann-like	e1a4iA1	1a4i	A	A:127-296	170
+a.18	RNase H-like	e1bcoA2	1bco	A	A:258-480	223

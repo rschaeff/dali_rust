@@ -1,0 +1,14 @@
+# Job: test
+# Query: 101mA
+# No:  Chain   Z    rmsd lali nres  %id PDB  Description
+   1:  1a00-A 20.6  1.5  139   141   26   MOLECULE: HEMOGLOBIN (ALPHA CHAIN);                                  
+
+# Structural equivalences
+   1: 101m-A 1a00-A     2 -  47 <=>    1 -  46   (VAL    1  - VAL   46  <=> VAL    1  - PHE   46 )                          
+   1: 101m-A 1a00-A    56 - 148 <=>   49 - 141   (MET   55  - LYS  147  <=> SER   49  - ARG  141 )                          
+
+# Translation-rotation matrices
+-matrix  "101m-A 1a00-A  U(1,.)   0.562913  0.703891 -0.433205          -60.495132"
+-matrix  "101m-A 1a00-A  U(2,.)  -0.097483 -0.463933 -0.880490           37.751827"
+-matrix  "101m-A 1a00-A  U(3,.)  -0.820747  0.537869 -0.192537           54.191654"
+

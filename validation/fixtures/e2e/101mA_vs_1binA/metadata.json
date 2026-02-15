@@ -1,0 +1,7 @@
+{
+  "command": "perl /home/rschaeff/src/Dali_v5/DaliLite.v5/bin/dali.pl --cd1 101mA --cd2 1binA --dat1 /home/rschaeff/src/Dali_v5/DaliLite.v5/DAT/ --dat2 /home/rschaeff/src/Dali_v5/DaliLite.v5/DAT/ --outfmt \"summary,alignments\"",
+  "return_code": 0,
+  "elapsed_seconds": 0.23925161361694336,
+  "cd1": "101mA",
+  "cd2": "1binA"
+}

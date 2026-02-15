@@ -1,0 +1,17 @@
+# Job: test
+# Query: 101mA
+# No:  Chain   Z    rmsd lali nres  %id PDB  Description
+   1:  1bin-A 15.2  2.6  139   143   12   MOLECULE: LEGHEMOGLOBIN A;                                           
+
+# Structural equivalences
+   1: 101m-A 1bin-A     1 -  50 <=>    1 -  50   (MET    0  - LEU   49  <=> VAL    1  - GLY   50 )                          
+   1: 101m-A 1bin-A    56 -  80 <=>   52 -  76   (MET   55  - LYS   79  <=> ASP   52  - LEU   76 )                          
+   1: 101m-A 1bin-A    81 -  84 <=>   80 -  83   (GLY   80  - GLU   83  <=> GLY   80  - VAL   83 )                          
+   1: 101m-A 1bin-A    86 -  95 <=>   84 -  93   (GLU   85  - ALA   94  <=> ALA   84  - ALA   93 )                          
+   1: 101m-A 1bin-A    97 - 146 <=>   94 - 143   (LYS   96  - LYS  145  <=> GLN   94  - ALA  143 )                          
+
+# Translation-rotation matrices
+-matrix  "101m-A 1bin-A  U(1,.)  -0.005687 -0.557857 -0.829918           53.447971"
+-matrix  "101m-A 1bin-A  U(2,.)   0.501841  0.716261 -0.484897           -8.181912"
+-matrix  "101m-A 1bin-A  U(3,.)   0.864941 -0.419245  0.275882           -0.128456"
+
