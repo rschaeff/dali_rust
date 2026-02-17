@@ -38,9 +38,13 @@ impl ProteinStore {
             }
         }
 
-        // Load from file (write lock)
+        // Load from file (write lock).
+        // Override the parsed code with the filename-derived code (the lookup key).
+        // The .dat header truncates codes to 5 chars for Fortran compat, but the
+        // filename preserves the full code (e.g. "002769959.dat" → code "002769959").
         let filepath = self.dat_dir.join(format!("{}.dat", code));
-        let protein = dat::read_dat(&filepath)?;
+        let mut protein = dat::read_dat(&filepath)?;
+        protein.code = code.to_string();
         let arc = Arc::new(protein);
 
         let mut cache = self.proteins.write().unwrap();

@@ -187,15 +187,14 @@ fn extract_backbone(
         });
     }
 
-    // Build protein code: append chain if pdb_code doesn't already end with it.
-    // Callers may pass "101m" (4-char) or "101mA" (5-char, already chain-suffixed).
-    // Truncate to 5 chars max (.dat format requires 5-char code field).
-    let code = if chain_id.len() == 1 && !pdb_code.ends_with(&*chain_id) {
-        let full = format!("{}{}", pdb_code, chain_id);
-        if full.len() > 5 { full[..5].to_string() } else { full }
+    // Build protein code: append chain if pdb_code is a short PDB code (≤4 chars)
+    // that doesn't already end with the chain letter.
+    // E.g. "101m" + chain "A" → "101mA".  Longer codes like ECOD domain IDs
+    // ("002769959") or AlphaFold IDs are kept verbatim.
+    let code = if pdb_code.len() <= 4 && chain_id.len() == 1 && !pdb_code.ends_with(&*chain_id) {
+        format!("{}{}", pdb_code, chain_id)
     } else {
-        let s = pdb_code.to_string();
-        if s.len() > 5 { s[..5].to_string() } else { s }
+        pdb_code.to_string()
     };
 
     Ok(BackboneData {

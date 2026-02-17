@@ -6,10 +6,10 @@ use crate::types::{DomainNode, NodeType, Protein, Segment, SseType};
 
 /// Parse a DaliLite .dat file into a Protein.
 ///
-/// .dat format (Fortran fixed-width):
-///   Header: `>>>> CODE  NRES NSEG  NA  NB  SECSTR`
-///     - chars 5-9: code, 10-14: nres, 15-19: nseg, 20-24: na, 25-29: nb
-///     - chars 32+: secondary structure characters (H/E)
+/// .dat format:
+///   Header: `>>>> CODE NRES NSEG NA NB SECSTR`
+///     - Whitespace-delimited tokens (supports codes of any length).
+///     - Also handles legacy Fortran fixed-width format (5-char code at positions 5-9).
 ///   Segments: (6i10) — index, start, end, check_start, check_end, checkx
 ///   CA coords: (10f8.1) — x,y,z for each residue sequentially
 ///   Second `>>>>`: SSE hierarchy (skipped)
@@ -55,17 +55,20 @@ pub fn read_dat<P: AsRef<Path>>(filepath: P) -> Result<Protein, DatError> {
         header_count += 1;
 
         if header_count == 1 {
-            // First >>>>: read header, segments, CA coords
-            code = line[5..10].trim().to_string();
-            nres = parse_int(&line[10..15])?;
-            nseg = parse_int(&line[15..20])?;
-            na = parse_int(&line[20..25])?;
-            nb = parse_int(&line[25..30])?;
-
-            // Secondary structure characters starting at position 32
-            if line.len() > 32 {
-                let secstr_str = &line[32..line.len().min(32 + nseg)];
-                secstr_chars = secstr_str.chars().collect();
+            // First >>>>: read header, segments, CA coords.
+            // Whitespace-delimited: >>>> CODE NRES NSEG NA NB SECSTR
+            let parts: Vec<&str> = line.split_whitespace().collect();
+            if parts.len() >= 6 {
+                code = parts[1].to_string();
+                nres = parts[2].parse().map_err(|_| DatError::Format(format!("Bad nres '{}'", parts[2])))?;
+                nseg = parts[3].parse().map_err(|_| DatError::Format(format!("Bad nseg '{}'", parts[3])))?;
+                na = parts[4].parse().map_err(|_| DatError::Format(format!("Bad na '{}'", parts[4])))?;
+                nb = parts[5].parse().map_err(|_| DatError::Format(format!("Bad nb '{}'", parts[5])))?;
+                if parts.len() > 6 {
+                    secstr_chars = parts[6].chars().take(nseg).collect();
+                }
+            } else {
+                return Err(DatError::Format(format!("Bad >>>> header: '{}'", line)));
             }
 
             idx += 1;
@@ -141,7 +144,15 @@ pub fn read_dat<P: AsRef<Path>>(filepath: P) -> Result<Protein, DatError> {
             continue;
         } else if header_count == 3 {
             // Third >>>>: domain decomposition tree
-            let ndom_header: usize = parse_int(&line[10..15])?;
+            // Whitespace: >>>> CODE NDOM  (or legacy fixed: >>>> at 0-4, code at 5-9, ndom at 10-14)
+            let parts: Vec<&str> = line.split_whitespace().collect();
+            let ndom_header: usize = if parts.len() >= 3 {
+                parts[2].parse().unwrap_or(0)
+            } else if line.len() >= 15 {
+                parse_int(&line[10..15]).unwrap_or(0)
+            } else {
+                0
+            };
             idx += 1;
 
             domain_tree = Vec::with_capacity(ndom_header);
@@ -242,15 +253,14 @@ pub fn write_dat<P: AsRef<Path>>(protein: &Protein, filepath: P) -> Result<(), D
     let mut f = std::fs::File::create(filepath.as_ref())
         .map_err(|e| DatError::Io(e.to_string()))?;
 
-    // .dat format uses a 5-character code field; truncate if longer
-    let code = if protein.code.len() > 5 { &protein.code[..5] } else { &protein.code };
+    let code = &protein.code;
 
     // Build secondary structure string
     let secstr_str: String = protein.secstr.iter().map(|s| s.to_char()).collect();
 
-    // Section 1 header: >>>> CODE  NRES NSEG  NA  NB  SECSTR
-    // Positions: 0-3 ">>>>", 4 " ", 5-9 code, 10-14 nres, 15-19 nseg, 20-24 na, 25-29 nb, 30-31 "  ", 32+ secstr
-    writeln!(f, ">>>> {:>5}{:>5}{:>5}{:>5}{:>5}  {}",
+    // Section 1 header: >>>> CODE NRES NSEG NA NB SECSTR
+    // Whitespace-delimited (supports codes of any length).
+    writeln!(f, ">>>> {} {} {} {} {} {}",
              code, protein.nres, protein.nseg, protein.na, protein.nb, secstr_str)
         .map_err(|e| DatError::Io(e.to_string()))?;
 
@@ -278,14 +288,13 @@ pub fn write_dat<P: AsRef<Path>>(protein: &Protein, filepath: P) -> Result<(), D
     }
 
     // Section 2: SSE hierarchy (header only — read_dat skips content)
-    writeln!(f, ">>>> {:>5}{:>5}{:>5}{:>5}{:>5}  {}",
+    writeln!(f, ">>>> {} {} {} {} {} {}",
              code, protein.nres, protein.nseg, protein.na, protein.nb, secstr_str)
         .map_err(|e| DatError::Io(e.to_string()))?;
 
     // Section 3: domain decomposition tree
     let ndom = protein.domain_tree.len();
-    // Header: >>>> at 0-3, space at 4, code at 5-9, ndom at 10-14
-    writeln!(f, ">>>> {:>5}{:>5}", code, ndom)
+    writeln!(f, ">>>> {} {}", code, ndom)
         .map_err(|e| DatError::Io(e.to_string()))?;
 
     for node in &protein.domain_tree {

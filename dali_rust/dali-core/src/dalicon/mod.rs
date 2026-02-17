@@ -206,7 +206,7 @@ fn testi(
         let k = preali1[i] as i32;
         if k > 0 {
             let j_lo = 1.max(k - 3) as usize;
-            let j_hi = ((nres1 as i32 - 3).min(k + 3)) as usize;
+            let j_hi = ((nres2 as i32).min(k + 3)) as usize;
             for j in j_lo..=j_hi {
                 let idx = i * stride + j;
                 score_vals[idx] = 1.0f32;
