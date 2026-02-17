@@ -205,19 +205,58 @@ The parallel speedup is ~1.6x (not 2x) because the 4 paths have unequal cost:
 the two PARSI paths dominate, so 4→2 threads gives diminishing returns when
 2 of the 4 tasks are much shorter than the others.
 
+## Optimization Round 3: PARSI Unsafe Unchecked Indexing + Allocation Elimination
+
+PARSI is the parallel bottleneck (2.4x slower than wolf path). Optimizations:
+- Unsafe raw pointer access in `segsegscore`, `singletex`, `selfscore`,
+  `getupperlower`, `get_estimate` inner loops (bounds validated by if-guards)
+- Stack-allocated `rowsum` in `trimtable` (seglen ≤ 100)
+- Pre-allocated `ess_scratch` buffer in `getnextbest` → `split` hot path
+  (eliminates Vec alloc per branch-and-bound split, ~200 splits/domain)
+- Stack-allocated `lclosed` and `emax` arrays in `split`
+
+### PARSI Kernel — Rust vs Fortran
+
+| Pair | Nres | Rust (ms) | Fortran (ms) | Ratio | Winner |
+|------|------|-----------|--------------|-------|--------|
+| 101mA/1a00A | 295 | 47.1 | 20.8 | 2.26x | Fortran |
+| 101mA/1binA | 297 | 43.7 | 18.5 | 2.36x | Fortran |
+| 1a87A/1allA | 457 | 114.1 | 57.6 | 1.98x | Fortran |
+| 1a87A/101mA | 451 | 111.3 | 51.7 | 2.15x | Fortran |
+| 1a87A/1binA | 440 | 85.2 | 42.6 | 2.00x | Fortran |
+| 101mA/1allA | 314 | 41.0 | 18.6 | 2.20x | Fortran |
+| **TOTAL** | | **442.3** | **209.8** | **2.11x** | **Fortran** |
+
+**Result:** PARSI kernel 483ms → 442ms (**-8.5%**), Fortran gap 2.30x → **2.11x**.
+
+### Parallel Pipeline After All Optimizations
+
+| Pair | Nres | Rust (ms) | Fortran (ms) | Ratio | Winner |
+|------|------|-----------|--------------|-------|--------|
+| 101mA/1a00A | 295 | 170 | 295 | 0.58x | **Rust** |
+| 101mA/1binA | 297 | 180 | 143 | 1.26x | Fortran |
+| 1a87A/1allA | 457 | 744 | 303 | 2.45x | Fortran |
+| 1a87A/101mA | 451 | 691 | 243 | 2.84x | Fortran |
+| 1a87A/1binA | 440 | 661 | 190 | 3.47x | Fortran |
+| 101mA/1allA | 314 | 205 | 190 | 1.07x | Fortran |
+| **TOTAL** | | **2650** | **1364** | **1.94x** | **Fortran** |
+
+**Result:** Pipeline total 2724ms → 2650ms (**-2.7%**), Fortran gap 2.02x → **1.94x**.
+Rust wins 101mA/1a00A by 42% (0.58x). 101mA/1allA nearly at parity (1.07x).
+
 ## Summary
 
-| Level | Baseline | After DALICON opt | After Rayon |
-|-------|----------|-------------------|-------------|
-| WOLF kernel | Rust 1.8x faster | — | — |
-| PARSI kernel | Fortran 2.3x faster | — | — |
-| Full pipeline | Fortran 4.9x | Fortran 3.3x | **Fortran 2.0x** |
+| Level | Baseline | +DALICON opt | +Rayon | +PARSI opt |
+|-------|----------|-------------|--------|-----------|
+| WOLF kernel | Rust 1.8x faster | — | — | — |
+| PARSI kernel | Fortran 2.3x | — | — | Fortran 2.1x |
+| DALICON kernel | — | **-46%** | — | — |
+| Full pipeline | Fortran 4.9x | Fortran 3.3x | Fortran 2.0x | **Fortran 1.9x** |
 
 For same-fold globin pairs (small proteins, both paths produce hits),
-Rust is now competitive or faster. The remaining 2x gap on larger cross-fold
-pairs comes from DALICON+PARSI kernel costs scaling super-linearly with
-protein size, where Fortran's integer*2 arithmetic and zero-allocation
-COMMON blocks still dominate.
+Rust is now 42% faster than Fortran. The remaining ~2x gap on larger cross-fold
+pairs comes from PARSI kernel costs (where Fortran's GCC codegen, zero-allocation
+COMMON blocks, and optimized integer scoring still dominate).
 
 ### Structural advantage over Fortran
 

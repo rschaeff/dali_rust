@@ -5,7 +5,7 @@
 
 use std::collections::BinaryHeap;
 use super::{NUL, INFINIT, MAXRES0};
-use super::scoring::{get_ess, get_estimate};
+use super::scoring::{get_ess, get_ess_into, get_estimate};
 
 /// A search state: score estimate + bit-packed candidate masks.
 /// Bit layout: segments packed in seglist order, mi[seg] bits per segment.
@@ -149,6 +149,7 @@ pub fn getnextbest(
     // Scratch buffers — allocated once, reused each iteration
     let mut ni = vec![0i32; nseg];
     let mut ci = vec![0i32; MAXRES0 * nseg];
+    let mut ess_scratch = vec![0i32; nseg * nseg];
 
     loop {
         if pstack.is_empty() {
@@ -190,7 +191,7 @@ pub fn getnextbest(
 
         // Split (ni/ci are mutable scratch buffers, restored after each copyandput)
         split(est, ns, seglist, ex, scorecutoff, &mut ni, &mut ci, mi, pstack,
-              start, trans, lseqtl);
+              start, trans, lseqtl, &mut ess_scratch);
     }
 }
 
@@ -199,19 +200,22 @@ pub fn split(
     _est: i32, ns: usize, seglist: &[usize], ex: &[i32], scorecutoff: i32,
     ni: &mut [i32], ci: &mut [i32], mi: &[i32], pstack: &mut PriorityStack,
     start: &[i32], trans: &[i32], lseqtl: bool,
+    ess_scratch: &mut [i32],
 ) {
     let nseg = mi.len();
 
     // Check which segments are closed (only 1 candidate)
-    let mut lclosed = vec![false; nseg];
+    // Stack-allocate for typical nseg sizes (≤ 200)
+    let mut lclosed_buf = [false; 200];
+    let lclosed = &mut lclosed_buf[..nseg];
     for is_ in 0..ns {
         let iseg = seglist[is_];
         lclosed[iseg] = ni[iseg] <= 1;
     }
 
-    // Get segment score contributions
-    let (ess, est_new) = get_ess(ns, seglist, ni, ci, nseg, ex, start, nseg,
-                                  mi, trans, nseg, lseqtl);
+    // Get segment score contributions (uses pre-allocated ess buffer)
+    let est_new = get_ess_into(ns, seglist, ni, ci, nseg, ex, start, nseg,
+                                mi, trans, nseg, lseqtl, ess_scratch);
     if est_new <= scorecutoff { return; }
 
     // Find segment with highest score contribution (getemax)
@@ -221,7 +225,7 @@ pub fn split(
 
     for is_ in 0..ns {
         let iseg = seglist[is_];
-        if let Some((e, x, y)) = getemax_update(ess[iseg * nseg + iseg], emaxim, &lclosed,
+        if let Some((e, x, y)) = getemax_update(ess_scratch[iseg * nseg + iseg], emaxim, &lclosed,
                                                    iseg, iseg, xseg, yseg) {
             emaxim = e;
             xseg = x;
@@ -229,7 +233,7 @@ pub fn split(
         }
         for js in 0..is_ {
             let jseg = seglist[js];
-            if let Some((e, x, y)) = getemax_update(ess[iseg * nseg + jseg], emaxim, &lclosed,
+            if let Some((e, x, y)) = getemax_update(ess_scratch[iseg * nseg + jseg], emaxim, &lclosed,
                                                        iseg, jseg, xseg, yseg) {
                 emaxim = e;
                 xseg = x;
@@ -242,8 +246,8 @@ pub fn split(
     let xseg = xseg as usize;
     let yseg = yseg as usize;
 
-    // Compute emax per candidate of xseg
-    let mut emax = vec![-INFINIT; MAXRES0];
+    // Compute emax per candidate of xseg (stack-allocated)
+    let mut emax = [-INFINIT; MAXRES0];
     let n1;
     if start[xseg * nseg + yseg] < 0 {
         n1 = 0;
@@ -359,19 +363,19 @@ pub fn split(
         }
         for cands in [&ci6, &ci3, &ci4] {
             if !cands.is_empty() {
-                copyandput(cands, xseg, ni, ci, est_new, ns, seglist, &ess,
+                copyandput(cands, xseg, ni, ci, est_new, ns, seglist, ess_scratch,
                            ex, start, mi, trans, lseqtl, scorecutoff, pstack);
             }
         }
     } else {
         if !ci1.is_empty() {
-            copyandput(&ci1, xseg, ni, ci, est_new, ns, seglist, &ess,
+            copyandput(&ci1, xseg, ni, ci, est_new, ns, seglist, ess_scratch,
                        ex, start, mi, trans, lseqtl, scorecutoff, pstack);
         }
     }
 
     if !ci2.is_empty() {
-        copyandput(&ci2, xseg, ni, ci, est_new, ns, seglist, &ess,
+        copyandput(&ci2, xseg, ni, ci, est_new, ns, seglist, ess_scratch,
                    ex, start, mi, trans, lseqtl, scorecutoff, pstack);
     }
 }

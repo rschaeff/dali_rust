@@ -45,6 +45,9 @@ pub fn fillscoretable(weight: &[i32]) -> Vec<i32> {
 /// Returns flat Vec of nseg*nseg, indexed [iseg * nseg + jseg].
 pub fn selfscore(nseg: usize, segmentrange: &[i32], dist: &[i16], nres: usize, weight: &[i32]) -> Vec<i32> {
     let mut ss = vec![0i32; nseg * nseg];
+    let dist_ptr = dist.as_ptr();
+    let weight_ptr = weight.as_ptr();
+    let weight_len = weight.len();
     for iseg in 0..nseg {
         for jseg in 0..=iseg {
             let si = segmentrange[iseg * 2] as usize;
@@ -54,9 +57,10 @@ pub fn selfscore(nseg: usize, segmentrange: &[i32], dist: &[i16], nres: usize, w
             let mut s: i64 = 0;
             for ires in (si - 1)..ei {
                 for jres in (sj - 1)..ej {
-                    let p = dist[ires * nres + jres] as usize;
-                    if p < weight.len() {
-                        s += weight[p] as i64 * 20;
+                    // Safety: ires < ei <= nres, jres < ej <= nres
+                    let p = unsafe { *dist_ptr.add(ires * nres + jres) } as usize;
+                    if p < weight_len {
+                        s += unsafe { *weight_ptr.add(p) } as i64 * 20;
                     }
                 }
             }
@@ -76,6 +80,7 @@ pub fn selfscore(nseg: usize, segmentrange: &[i32], dist: &[i16], nres: usize, w
 pub fn getupperlower(dist: &[i16], nseg: usize, segmentrange: &[i32], nres: usize) -> (Vec<i32>, Vec<i32>) {
     let mut lower = vec![0i32; nseg * nseg];
     let mut upper = vec![0i32; nseg * nseg];
+    let dist_ptr = dist.as_ptr();
     for iseg in 0..nseg {
         for jseg in 0..=iseg {
             let si = segmentrange[iseg * 2] as usize;
@@ -85,7 +90,8 @@ pub fn getupperlower(dist: &[i16], nseg: usize, segmentrange: &[i32], nres: usiz
             let mut s: i64 = 0;
             for ires in (si - 1)..ei {
                 for jres in (sj - 1)..ej {
-                    s += dist[ires * nres + jres] as i64;
+                    // Safety: ires < ei <= nres, jres < ej <= nres
+                    s += unsafe { *dist_ptr.add(ires * nres + jres) } as i64;
                 }
             }
             lower[iseg * nseg + jseg] = (70 * s) as i32;
@@ -239,7 +245,7 @@ pub fn trimtable(table: &[i32], table_stride: usize, ibeg: &mut i32, iend: &mut 
             break;
         }
         // Compute row sums
-        let mut rowsum = vec![0i32; (seglen + 1) as usize];
+        let mut rowsum = [0i32; 101];
         for i in (1 + *ibeg)..(seglen - *iend + 1) {
             for j in (1 + *ibeg)..(seglen - *iend + 1) {
                 rowsum[i as usize] += table[i as usize * table_stride + j as usize];
@@ -289,6 +295,10 @@ pub fn singletex(
 
     let seglen = a2 - a1 + 1;
     if seglen > 100 { return; }
+
+    let dist2_ptr = dist2.as_ptr();
+    let dist_ptr = dist.as_ptr();
+    let scoretable_ptr = scoretable.as_ptr();
 
     for ir in 0..nir {
         let transires = trans[ir * trans_stride + iseg];
@@ -341,11 +351,12 @@ pub fn singletex(
                             if q_row < nres2 && q_col < nres2
                                 && p_row < nres1 && p_col < nres1
                             {
-                                let d2_val = dist2[q_row * nres2 + q_col] as usize;
-                                let d1_val = dist[p_row * nres1 + p_col] as usize;
+                                // Safety: bounds validated by if-guard above
+                                let d2_val = unsafe { *dist2_ptr.add(q_row * nres2 + q_col) } as usize;
+                                let d1_val = unsafe { *dist_ptr.add(p_row * nres1 + p_col) } as usize;
                                 if d2_val < 161 && d1_val < 401 {
                                     table[(i + 1) as usize * tbl_size + (j + 1) as usize] =
-                                        scoretable[d2_val * 401 + d1_val];
+                                        unsafe { *scoretable_ptr.add(d2_val * 401 + d1_val) };
                                 }
                             }
                         }
@@ -397,6 +408,10 @@ pub fn segsegscore(
     let lself = iseg == jseg;
     let j1 = transires - a1;
     let j2 = transjres - b1;
+
+    let dist2_ptr = dist2.as_ptr();
+    let dist_ptr = dist.as_ptr();
+    let scoretable_ptr = scoretable.as_ptr();
 
     for jshift in 0..bl {
         if transjres + jshift as i32 > nres2 as i32 { break; }
@@ -464,11 +479,10 @@ pub fn segsegscore(
                 if ds2 <= low1 as i64 || ds2 >= upp1 as i64 { continue; }
             }
 
-            // Precise calculation
+            // Precise calculation — unsafe unchecked indexing on hot path
             let mut x: i32 = 0;
             for a in (a1 + ibeg)..=(a2 - iend) {
                 let p_row = (a - 1) as usize;
-                let q_row = (a + k1 - 1) as usize;
                 for b in (b1 + jbeg)..=(b2 - jend) {
                     let b_col = (b - 1) as usize;
                     let d2_row = (transires + ishift as i32 - 1 + (a - a1)) as usize;
@@ -476,10 +490,12 @@ pub fn segsegscore(
                     if d2_row < nres2 && d2_col < nres2
                         && p_row < nres1 && b_col < nres1
                     {
-                        let dv2 = dist2[d2_row * nres2 + d2_col] as usize;
-                        let dv1 = dist[p_row * nres1 + b_col] as usize;
+                        // Safety: bounds validated by if-guard above;
+                        // dv2 < 161 && dv1 < 401 ensures scoretable index < 161*401
+                        let dv2 = unsafe { *dist2_ptr.add(d2_row * nres2 + d2_col) } as usize;
+                        let dv1 = unsafe { *dist_ptr.add(p_row * nres1 + b_col) } as usize;
                         if dv2 >= 1 && dv1 >= 1 && dv2 < 161 && dv1 < 401 {
-                            x += scoretable[dv2 * 401 + dv1];
+                            x += unsafe { *scoretable_ptr.add(dv2 * 401 + dv1) };
                         }
                     }
                 }
@@ -621,14 +637,16 @@ fn setstart1(
 }
 
 /// Compute segment score contributions (ess) and total estimate.
+/// Writes into caller-provided `ess` buffer (nseg*nseg).
 #[inline(always)]
-pub fn get_ess(
+pub fn get_ess_into(
     ns: usize, seglist: &[usize], ni: &[i32], ci: &[i32], ci_stride: usize,
     ex: &[i32], start: &[i32], start_stride: usize,
     mi: &[i32], trans: &[i32], trans_stride: usize, lseqtl: bool,
-) -> (Vec<i32>, i32) {
+    ess: &mut [i32],
+) -> i32 {
     let nseg = mi.len();
-    let mut ess = vec![0i32; nseg * nseg];
+    ess[..nseg * nseg].fill(0);
     let mut est: i64 = 0;
     for is_ in 0..ns {
         let iseg = seglist[is_];
@@ -646,7 +664,21 @@ pub fn get_ess(
             est += e2 as i64;
         }
     }
-    (ess, est.min(i32::MAX as i64) as i32)
+    est.min(i32::MAX as i64) as i32
+}
+
+/// Convenience wrapper that allocates ess buffer.
+#[inline(always)]
+pub fn get_ess(
+    ns: usize, seglist: &[usize], ni: &[i32], ci: &[i32], ci_stride: usize,
+    ex: &[i32], start: &[i32], start_stride: usize,
+    mi: &[i32], trans: &[i32], trans_stride: usize, lseqtl: bool,
+) -> (Vec<i32>, i32) {
+    let nseg = mi.len();
+    let mut ess = vec![0i32; nseg * nseg];
+    let est = get_ess_into(ns, seglist, ni, ci, ci_stride, ex, start, start_stride,
+                            mi, trans, trans_stride, lseqtl, &mut ess);
+    (ess, est)
 }
 
 /// Get maximum score estimate for a segment pair.
@@ -675,11 +707,15 @@ pub fn get_estimate(
 
     let mut est = -INFINIT;
     let iwhere0 = start[aseg * start_stride + bseg];
+    let ex_ptr = ex.as_ptr();
+    let ex_len = ex.len();
     if aseg == bseg {
         for i in 0..ni[aseg] as usize {
             let idx = iwhere0 as usize + ci[i * ci_stride + aseg] as usize;
-            if idx < ex.len() {
-                est = est.max(ex[idx]);
+            if idx < ex_len {
+                // Safety: idx < ex_len verified above
+                let val = unsafe { *ex_ptr.add(idx) };
+                if val > est { est = val; }
             }
         }
     } else {
@@ -688,8 +724,10 @@ pub fn get_estimate(
             let iwhere = iwhere0 + ci[i * ci_stride + aseg] * jw;
             for j in 0..ni[bseg] as usize {
                 let idx = (iwhere + ci[j * ci_stride + bseg]) as usize;
-                if idx < ex.len() {
-                    est = est.max(ex[idx]);
+                if idx < ex_len {
+                    // Safety: idx < ex_len verified above
+                    let val = unsafe { *ex_ptr.add(idx) };
+                    if val > est { est = val; }
                 }
             }
         }
