@@ -301,6 +301,14 @@ fn bench_pipeline(c: &mut Criterion) {
                 b.iter(|| pipeline::compare_pair(cd1, cd2, &store))
             },
         );
+
+        group.bench_with_input(
+            BenchmarkId::new("compare_pair_serial", label),
+            &label,
+            |b, _| {
+                b.iter(|| pipeline::compare_pair_serial(cd1, cd2, &store))
+            },
+        );
     }
     group.finish();
 }

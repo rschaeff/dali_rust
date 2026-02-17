@@ -9,6 +9,8 @@
 
 use std::collections::HashMap;
 
+use rayon::prelude::*;
+
 use crate::types::{AlignmentBlock, DccpEntry};
 use crate::store::ProteinStore;
 use crate::wolf;
@@ -212,11 +214,11 @@ pub fn run_parsi_path(
 // Top-level entry point
 // ---------------------------------------------------------------------------
 
-/// Full comparison of two structures.
+/// Full comparison of two structures (serial).
 ///
 /// Runs wolf and parsi paths in both forward (query=cd1) and reverse
 /// (query=cd2) directions. Self-comparisons are filtered out.
-pub fn compare_pair(
+pub fn compare_pair_serial(
     cd1: &str,
     cd2: &str,
     store: &ProteinStore,
@@ -231,6 +233,48 @@ pub fn compare_pair(
     // Reverse direction: query=cd2
     all_results.extend(run_wolf_path(cd2, &targets, store));
     all_results.extend(run_parsi_path(cd2, &targets, store));
+
+    // Filter out self-comparisons
+    all_results.retain(|r| r.cd1 != r.cd2);
+
+    all_results
+}
+
+/// Full comparison of two structures (parallel via Rayon).
+///
+/// Runs 4 independent paths concurrently:
+///   1. Forward wolf  (cd1 → [cd1,cd2])
+///   2. Forward parsi (cd1 → [cd1,cd2])
+///   3. Reverse wolf  (cd2 → [cd1,cd2])
+///   4. Reverse parsi (cd2 → [cd1,cd2])
+///
+/// Each path has its own mutable state (DaliconCd1State, ParsiCd1Cache).
+/// Only the ProteinStore is shared (thread-safe via RwLock + Arc).
+pub fn compare_pair(
+    cd1: &str,
+    cd2: &str,
+    store: &ProteinStore,
+) -> Vec<DccpEntry> {
+    let targets: Vec<&str> = vec![cd1, cd2];
+
+    // Define the 4 independent tasks as (query, path_type) pairs
+    let tasks: Vec<(&str, bool)> = vec![
+        (cd1, true),   // forward wolf
+        (cd1, false),  // forward parsi
+        (cd2, true),   // reverse wolf
+        (cd2, false),  // reverse parsi
+    ];
+
+    let mut all_results: Vec<DccpEntry> = tasks
+        .into_par_iter()
+        .flat_map(|(query, is_wolf)| {
+            if is_wolf {
+                run_wolf_path(query, &targets, store)
+            } else {
+                run_parsi_path(query, &targets, store)
+            }
+        })
+        .collect();
 
     // Filter out self-comparisons
     all_results.retain(|r| r.cd1 != r.cd2);

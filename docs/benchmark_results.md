@@ -160,19 +160,81 @@ for the vast majority of runtime.
    `transrotate()` clones columns via `to_owned()`. Pre-allocating scratch
    buffers would help.
 
+## Optimization Round 1: DALICON Allocation Elimination
+
+DALICON consumed 83% of pipeline time. Optimizations applied:
+- Replace HashMap in `testi()` with flat array + bitmap
+- Replace HashMap in `gowithgenes()` with pre-allocated cnt_scratch
+- Eliminate ~20k Vec allocations per `lean_mc` call (caller-owned buffers)
+- Unsafe unchecked ndarray indexing in `addscore`/`getrescore` inner loops
+- `scorefun_w`: avoid f64 conversion, unchecked weight table access
+
+**Result:** DALICON kernel 65.4ms → 35.6ms (**-45.6%**), pipeline total
+6440ms → 4322ms (**-33%**), Fortran gap 4.87x → 3.28x.
+
+## Optimization Round 2: Rayon Parallelism
+
+`compare_pair` runs 4 independent paths:
+1. Forward wolf  (cd1 → targets)
+2. Forward parsi (cd1 → targets)
+3. Reverse wolf  (cd2 → targets)
+4. Reverse parsi (cd2 → targets)
+
+Each has its own mutable state (DaliconCd1State, ParsiCd1Cache). Only the
+ProteinStore is shared (thread-safe via `RwLock<HashMap<_, Arc<_>>>`).
+
+Rayon `into_par_iter().flat_map()` runs all 4 paths concurrently. No code
+changes to individual modules — only the pipeline orchestrator changed.
+
+### Parallel Pipeline — Rust vs Fortran
+
+| Pair | Nres | Rust (ms) | Fortran (ms) | Ratio | Winner |
+|------|------|-----------|--------------|-------|--------|
+| 101mA/1a00A | 295 | 205 | 299 | 0.69x | **Rust** |
+| 101mA/1binA | 297 | 203 | 151 | 1.34x | Fortran |
+| 1a87A/1allA | 457 | 733 | 307 | 2.39x | Fortran |
+| 1a87A/101mA | 451 | 698 | 227 | 3.07x | Fortran |
+| 1a87A/1binA | 440 | 669 | 170 | 3.95x | Fortran |
+| 101mA/1allA | 314 | 215 | 195 | 1.10x | Fortran |
+| **TOTAL** | | **2724** | **1348** | **2.02x** | **Fortran** |
+
+**Result:** Pipeline total 4322ms → 2724ms (**-37%**), Fortran gap 3.28x → **2.02x**.
+Rust now wins the small same-fold pair outright (0.69x = 45% faster).
+
+The parallel speedup is ~1.6x (not 2x) because the 4 paths have unequal cost:
+the two PARSI paths dominate, so 4→2 threads gives diminishing returns when
+2 of the 4 tasks are much shorter than the others.
+
 ## Summary
 
-| Level | Ratio | Notes |
-|-------|-------|-------|
-| WOLF kernel | **Rust 1.8x faster** | Spatial hashing favors Rust |
-| PARSI kernel | **Fortran 2.3x faster** | Integer scoring, no bounds checks |
-| Full pipeline | **Fortran 4.9x faster** | DALICON (GA+fitz) dominates |
+| Level | Baseline | After DALICON opt | After Rayon |
+|-------|----------|-------------------|-------------|
+| WOLF kernel | Rust 1.8x faster | — | — |
+| PARSI kernel | Fortran 2.3x faster | — | — |
+| Full pipeline | Fortran 4.9x | Fortran 3.3x | **Fortran 2.0x** |
 
-The Fortran pipeline's 4.9x advantage is real but includes 8-10 subprocess
-spawns and Perl text processing per pair. In a production setting where the
-Fortran overhead is amortized across batch comparisons, the gap may be larger.
-Conversely, Rayon parallelism (forward+reverse in parallel) could halve the
-Rust time, closing to ~2.5x.
+For same-fold globin pairs (small proteins, both paths produce hits),
+Rust is now competitive or faster. The remaining 2x gap on larger cross-fold
+pairs comes from DALICON+PARSI kernel costs scaling super-linearly with
+protein size, where Fortran's integer*2 arithmetic and zero-allocation
+COMMON blocks still dominate.
+
+### Structural advantage over Fortran
+
+Fortran's `serialcompare` runs as separate processes chained via Perl.
+Each invocation re-reads .dat files, re-allocates scoring tables, and
+writes intermediate results to `fort.101` files. Parallelism is impossible
+due to COMMON block global state.
+
+Rust's in-process pipeline:
+- **Shares protein data** via `Arc<Protein>` (zero-copy across paths)
+- **Runs 4 paths concurrently** via Rayon (zero-cost thread pool)
+- **No file I/O** between stages (direct struct passing)
+- **Scales with cores**: N-target comparisons trivially parallelize
+
+In the DPAM use case (50-500 pairs per protein), Rust can parallelize
+across pairs as well, while Fortran is limited to `dali.pl`'s MPI batch
+scheduler, which has per-invocation overhead of ~30ms.
 
 ## Fortran .dat Compatibility Note
 
