@@ -300,6 +300,10 @@ pub fn singletex(
     let dist_ptr = dist.as_ptr();
     let scoretable_ptr = scoretable.as_ptr();
 
+    // Hoist table allocation outside candidate loop (Fortran: integer table(100,100))
+    let tbl_size = 101;
+    let mut table = [0i32; 101 * 101];
+
     for ir in 0..nir {
         let transires = trans[ir * trans_stride + iseg];
 
@@ -339,25 +343,21 @@ pub fn singletex(
                     ibeg_save = INFINIT;
                     iend_save = INFINIT;
                 } else {
-                    // Calculate per-residue score table (stack-allocated)
-                    let tbl_size = 101;
-                    let mut table = [0i32; 101 * 101];
+                    // Zero and populate score table
+                    table[..tbl_size * tbl_size].fill(0);
+                    // Safety: ibeg/iend clamp guarantees q_row/q_col < nres2
+                    // and p_row/p_col < nres1 (a2 <= nres1, seglen = a2-a1+1)
                     for i in ibeg..(seglen - iend) {
                         for j in ibeg..(seglen - iend) {
                             let p_row = (a1 - 1 + i) as usize;
                             let p_col = (a1 - 1 + j) as usize;
                             let q_row = (tl - 1 + i) as usize;
                             let q_col = (tl - 1 + j) as usize;
-                            if q_row < nres2 && q_col < nres2
-                                && p_row < nres1 && p_col < nres1
-                            {
-                                // Safety: bounds validated by if-guard above
-                                let d2_val = unsafe { *dist2_ptr.add(q_row * nres2 + q_col) } as usize;
-                                let d1_val = unsafe { *dist_ptr.add(p_row * nres1 + p_col) } as usize;
-                                if d2_val < 161 && d1_val < 401 {
-                                    table[(i + 1) as usize * tbl_size + (j + 1) as usize] =
-                                        unsafe { *scoretable_ptr.add(d2_val * 401 + d1_val) };
-                                }
+                            let d2_val = unsafe { *dist2_ptr.add(q_row * nres2 + q_col) } as usize;
+                            let d1_val = unsafe { *dist_ptr.add(p_row * nres1 + p_col) } as usize;
+                            if d2_val < 161 && d1_val < 401 {
+                                table[(i + 1) as usize * tbl_size + (j + 1) as usize] =
+                                    unsafe { *scoretable_ptr.add(d2_val * 401 + d1_val) };
                             }
                         }
                     }
@@ -453,52 +453,51 @@ pub fn segsegscore(
             if iseg < jseg && ilast >= jfirst { continue; }
             if jseg < iseg && jlast >= ifirst { continue; }
 
-            // Distance sum filter
-            let mut ds2: i64 = 0;
-            for c in (a1 + k1 + ibeg)..=(a2 + k1 - iend) {
-                if c >= 1 && c <= nres2 as i32 {
-                    let ci = (c - 1) as usize;
-                    ds2 += (dist2sum[ci * dist2sum_stride + d2_val as usize]
-                            - dist2sum[ci * dist2sum_stride + d1_val as usize]) as i64;
-                }
+            // Distance sum filter — i32 accumulation, pre-clamped ranges
+            let c_lo2 = (a1 + k1 + ibeg).max(1);
+            let c_hi2 = (a2 + k1 - iend).min(nres2 as i32);
+            let mut ds2: i32 = 0;
+            for c in c_lo2..=c_hi2 {
+                let ci = (c - 1) as usize;
+                ds2 += dist2sum[ci * dist2sum_stride + d2_val as usize]
+                       - dist2sum[ci * dist2sum_stride + d1_val as usize];
             }
 
             if !l1 {
-                let mut ds1: i64 = 0;
-                for c in (a1 + ibeg)..=(a2 - iend) {
-                    if c >= 1 && c <= nres1 as i32 {
-                        let ci = (c - 1) as usize;
-                        ds1 += (dist1sum[ci * dist1sum_stride + e2 as usize]
-                                - dist1sum[ci * dist1sum_stride + e1 as usize]) as i64;
-                    }
+                let c_lo1 = (a1 + ibeg).max(1);
+                let c_hi1 = (a2 - iend).min(nres1 as i32);
+                let mut ds1: i32 = 0;
+                for c in c_lo1..=c_hi1 {
+                    let ci = (c - 1) as usize;
+                    ds1 += dist1sum[ci * dist1sum_stride + e2 as usize]
+                           - dist1sum[ci * dist1sum_stride + e1 as usize];
                 }
-                let low = (0.7f32 * ds1 as f32) as i64;
-                let upp = (1.3f32 * ds1 as f32) as i64;
+                let low = (0.7f32 * ds1 as f32) as i32;
+                let upp = (1.3f32 * ds1 as f32) as i32;
                 if ds2 <= low || ds2 >= upp { continue; }
             } else {
-                if ds2 <= low1 as i64 || ds2 >= upp1 as i64 { continue; }
+                if ds2 <= low1 || ds2 >= upp1 { continue; }
             }
 
-            // Precise calculation — unsafe unchecked indexing on hot path
+            // Precise calculation — pointer arithmetic (p += nres1, q += nres2)
+            // Safety: spatial bounds guaranteed by ilast/jlast <= nres2 and a2/b2 <= nres1
             let mut x: i32 = 0;
-            for a in (a1 + ibeg)..=(a2 - iend) {
-                let p_row = (a - 1) as usize;
-                for b in (b1 + jbeg)..=(b2 - jend) {
-                    let b_col = (b - 1) as usize;
-                    let d2_row = (transires + ishift as i32 - 1 + (a - a1)) as usize;
-                    let d2_col = (transjres + jshift as i32 - 1 + (b - b1)) as usize;
-                    if d2_row < nres2 && d2_col < nres2
-                        && p_row < nres1 && b_col < nres1
-                    {
-                        // Safety: bounds validated by if-guard above;
-                        // dv2 < 161 && dv1 < 401 ensures scoretable index < 161*401
-                        let dv2 = unsafe { *dist2_ptr.add(d2_row * nres2 + d2_col) } as usize;
-                        let dv1 = unsafe { *dist_ptr.add(p_row * nres1 + b_col) } as usize;
-                        if dv2 >= 1 && dv1 >= 1 && dv2 < 161 && dv1 < 401 {
-                            x += unsafe { *scoretable_ptr.add(dv2 * 401 + dv1) };
-                        }
+            let b_start = (b1 + jbeg - 1) as usize;
+            let b_stop = (b2 - jend - 1) as usize;
+            let mut p = (a1 + ibeg - 1) as usize * nres1;
+            let d2_col_off = (transjres + jshift as i32 - b1) as isize;
+            let mut q: isize = (transires + ishift as i32 - 1 + ibeg) as isize
+                               * nres2 as isize + d2_col_off;
+            for _a in (a1 + ibeg)..=(a2 - iend) {
+                for b_col in b_start..=b_stop {
+                    let dv2 = unsafe { *dist2_ptr.offset(q + b_col as isize) } as usize;
+                    let dv1 = unsafe { *dist_ptr.add(p + b_col) } as usize;
+                    if dv2 >= 1 && dv1 >= 1 && dv2 < 161 && dv1 < 401 {
+                        x += unsafe { *scoretable_ptr.add(dv2 * 401 + dv1) };
                     }
                 }
+                p += nres1;
+                q += nres2 as isize;
             }
             if x > s { s = x; }
         }

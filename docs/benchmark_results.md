@@ -244,19 +244,64 @@ PARSI is the parallel bottleneck (2.4x slower than wolf path). Optimizations:
 **Result:** Pipeline total 2724ms → 2650ms (**-2.7%**), Fortran gap 2.02x → **1.94x**.
 Rust wins 101mA/1a00A by 42% (0.58x). 101mA/1allA nearly at parity (1.07x).
 
+## Optimization Round 4: Idiomatic Optimization — Pointer Arithmetic + Bounds Elimination
+
+Shift from faithful Fortran translation to idiomatic Rust execution model.
+Key insight: the "faithful port" was faithful to Fortran's *syntax* but unfaithful
+to its *execution model* (pointer walking, i32 arithmetic, no redundant checks).
+
+Optimizations:
+- **Pointer arithmetic in `segsegscore`**: `p += nres1, q += nres2` stride walking
+  (replaces `d2_row * nres2 + d2_col` multiply per inner iteration)
+- **Removed 4 redundant bounds checks** in `segsegscore` inner loop (spatial bounds
+  guaranteed by `ilast/jlast <= nres2` and `a2/b2 <= nres1` pre-validation)
+- **Removed 4 redundant bounds checks** in `singletex` inner loop (ibeg/iend clamp)
+- **i32 distance sum accumulation** (was i64; max possible value ~16M, well within i32)
+- **Pre-clamped loop ranges** for distance sums (eliminates per-iteration bounds check)
+- **Hoisted table allocation** in `singletex` (40KB table allocated once per segment,
+  not per candidate×block-shift; matches Fortran `integer table(100,100)`)
+
+### PARSI Kernel — Rust vs Fortran
+
+| Pair | Nres | Rust (ms) | Fortran (ms) | Ratio | Winner |
+|------|------|-----------|--------------|-------|--------|
+| 101mA/1a00A | 295 | 29.7 | 21.1 | 1.41x | Fortran |
+| 101mA/1binA | 297 | 26.7 | 18.9 | 1.41x | Fortran |
+| 1a87A/1allA | 457 | 89.4 | 57.9 | 1.55x | Fortran |
+| 1a87A/101mA | 451 | 84.7 | 52.0 | 1.63x | Fortran |
+| 1a87A/1binA | 440 | 63.8 | 42.1 | 1.52x | Fortran |
+| 101mA/1allA | 314 | 26.3 | 18.8 | 1.40x | Fortran |
+| **TOTAL** | | **320.6** | **210.6** | **1.52x** | **Fortran** |
+
+**Result:** PARSI kernel 442ms → 321ms (**-27.5%**), Fortran gap 2.11x → **1.52x**.
+
+### Parallel Pipeline After All Optimizations
+
+| Pair | Nres | Rust (ms) | Fortran (ms) | Ratio | Winner |
+|------|------|-----------|--------------|-------|--------|
+| 101mA/1a00A | 295 | 131 | 288 | 0.46x | **Rust** |
+| 101mA/1binA | 297 | 140 | 146 | 0.95x | **Rust** |
+| 1a87A/1allA | 457 | 642 | 295 | 2.18x | Fortran |
+| 1a87A/101mA | 451 | 573 | 236 | 2.43x | Fortran |
+| 1a87A/1binA | 440 | 583 | 166 | 3.51x | Fortran |
+| 101mA/1allA | 314 | 173 | 204 | 0.85x | **Rust** |
+| **TOTAL** | | **2242** | **1336** | **1.68x** | **Fortran** |
+
+**Result:** Pipeline 2650ms → 2242ms (**-15.4%**), Fortran gap 1.94x → **1.68x**.
+Rust wins 3 of 6 pairs. 101mA/1a00A: Rust 54% faster. 101mA/1allA: Rust 15% faster.
+
 ## Summary
 
-| Level | Baseline | +DALICON opt | +Rayon | +PARSI opt |
-|-------|----------|-------------|--------|-----------|
-| WOLF kernel | Rust 1.8x faster | — | — | — |
-| PARSI kernel | Fortran 2.3x | — | — | Fortran 2.1x |
-| DALICON kernel | — | **-46%** | — | — |
-| Full pipeline | Fortran 4.9x | Fortran 3.3x | Fortran 2.0x | **Fortran 1.9x** |
+| Level | Baseline | +DALICON opt | +Rayon | +PARSI R3 | +PARSI R4 |
+|-------|----------|-------------|--------|-----------|-----------|
+| WOLF kernel | Rust 1.8x faster | — | — | — | — |
+| PARSI kernel | Fortran 2.3x | — | — | Fortran 2.1x | **Fortran 1.5x** |
+| DALICON kernel | — | **-46%** | — | — | — |
+| Full pipeline | Fortran 4.9x | Fortran 3.3x | Fortran 2.0x | Fortran 1.9x | **Fortran 1.7x** |
 
-For same-fold globin pairs (small proteins, both paths produce hits),
-Rust is now 42% faster than Fortran. The remaining ~2x gap on larger cross-fold
-pairs comes from PARSI kernel costs (where Fortran's GCC codegen, zero-allocation
-COMMON blocks, and optimized integer scoring still dominate).
+Rust wins same-fold globin pairs by 5-54%. The remaining 1.5x PARSI kernel gap
+likely reflects Fortran's advantage in tight integer loop codegen (GCC auto-vectorization
+of simple i16/i32 loops, register allocation for few-variable inner loops).
 
 ### Structural advantage over Fortran
 
