@@ -66,21 +66,24 @@ fn gagaweights() -> &'static [f32; 101] {
 }
 
 /// DALICON scoring function using precomputed weights.
-#[inline]
+#[inline(always)]
 fn scorefun_w(a: i16, b: i16, wght: &[f32; 101]) -> f32 {
     let ia = a as i32;
     let ib = b as i32;
     let x = (ia - ib).unsigned_abs() as f32 / 10.0f32;
     let y = (ia + ib) as f32 / 20.0f32;
-    let yint = nint(y as f64);
+    // Avoid f64 conversion: nint on positive f32 = (y + 0.5) as i32
+    let yint = (y + 0.5f32) as i32;
     if y > 100.0f32 {
         return 0.0f32;
     }
     let iy = yint.clamp(0, 100) as usize;
+    // Safety: iy is clamped to 0..=100
+    let w = unsafe { *wght.get_unchecked(iy) };
     let s = if y > 0.0f32 {
-        wght[iy] * (0.20f32 - x / y)
+        w * (0.20f32 - x / y)
     } else {
-        wght[iy] * 0.20f32
+        w * 0.20f32
     };
     s * 100.0f32
 }
@@ -150,6 +153,7 @@ fn getleftrite(
 /// Build tetrapeptide candidate pool from prealignment and distance maps.
 ///
 /// Translated from testi.f testi().
+/// Uses flat array + bitmap instead of HashMap for score_map.
 fn testi(
     nres1: usize,
     nres2: usize,
@@ -165,11 +169,20 @@ fn testi(
 
     let (left, rite) = getleftrite(nres1, nres2, preali1, 10);
 
-    // Build score map using HashMap for sparse storage
-    let mut score_map = std::collections::HashMap::new();
+    // Flat score map: score_map[i * stride + j], with has_score bitmap
+    let stride = nres2 + 1;
+    let flat_size = (nres1 + 1) * stride;
+    let mut score_vals = vec![0.0f32; flat_size];
+    let mut has_score = vec![false; flat_size];
+
+    let d1_ptr = d1.as_ptr();
+    let d2_ptr = d2.as_ptr();
+    let d1_stride = d1.strides()[0] as usize;
+    let d2_stride = d2.strides()[0] as usize;
+
     for i in 1..=nres1 {
-        for j in (left[i] + 1)..rite[i] {
-            let j = j as usize;
+        for j_i32 in (left[i] + 1)..rite[i] {
+            let j = j_i32 as usize;
             if j < 1 || j > nres2 {
                 continue;
             }
@@ -177,10 +190,14 @@ fn testi(
             for &i0 in &aligned {
                 let j0 = preali1[i0] as usize;
                 if i != i0 && j != j0 {
-                    x += scorefun_w(d1[[i0, i]], d2[[j0, j]], wght);
+                    let d1v = unsafe { *d1_ptr.add(i0 * d1_stride + i) };
+                    let d2v = unsafe { *d2_ptr.add(j0 * d2_stride + j) };
+                    x += scorefun_w(d1v, d2v, wght);
                 }
             }
-            score_map.insert((i, j), x);
+            let idx = i * stride + j;
+            score_vals[idx] = x;
+            has_score[idx] = true;
         }
     }
 
@@ -191,7 +208,9 @@ fn testi(
             let j_lo = 1.max(k - 3) as usize;
             let j_hi = ((nres1 as i32 - 3).min(k + 3)) as usize;
             for j in j_lo..=j_hi {
-                score_map.insert((i, j), 1.0f32);
+                let idx = i * stride + j;
+                score_vals[idx] = 1.0f32;
+                has_score[idx] = true;
             }
         }
     }
@@ -209,7 +228,10 @@ fn testi(
             }
             let mut x = 0.0f32;
             for l in 0..4 {
-                x += score_map.get(&(i + l, j + l)).copied().unwrap_or(0.0);
+                let idx = (i + l) * stride + (j + l);
+                if has_score[idx] {
+                    x += score_vals[idx];
+                }
             }
             if x > 0.0 && tetrapool.len() < MAXPAIR {
                 tetrapool.push((i, j));
@@ -243,6 +265,11 @@ struct LeanState {
     nres1: usize,
     nres2: usize,
     stride: usize,          // nres2+2 for flat indexing
+    // Scratch buffers (reused across calls to avoid allocation)
+    cnt_scratch: Vec<i32>,      // copy of cnt for gowithgenes
+    genedel_scratch: Vec<usize>,  // reusable genedel buffer
+    rem_scratch: Vec<(usize, usize)>,  // reusable rem buffer
+    new_pairs_scratch: Vec<(usize, usize)>,  // reusable new_pairs buffer
 }
 
 impl LeanState {
@@ -252,12 +279,15 @@ impl LeanState {
         let flat_sz = sz1 * sz2;
         let max_cand = MAXPAIR * 4 + 1;
 
+        // Pre-allocate cnt_scratch as copy of cnt (will be initialized to cnt values)
+        let cnt_init = vec![0i32; sz1];
+
         LeanState {
             ali1: vec![0i16; sz1],
             ali2: vec![0i16; sz2],
             fragali1: vec![0i16; sz1],
             fragali2: vec![0i16; sz2],
-            cnt: vec![0i32; sz1],
+            cnt: cnt_init.clone(),
             prev1: vec![0i32; sz1],
             next1: vec![nres1 as i32 + 1; sz1],
             nextres: vec![nres1 as i32 + 1; sz1],
@@ -271,6 +301,10 @@ impl LeanState {
             nres1,
             nres2,
             stride: sz2,
+            cnt_scratch: cnt_init,
+            genedel_scratch: Vec::with_capacity(64),
+            rem_scratch: Vec::with_capacity(64),
+            new_pairs_scratch: Vec::with_capacity(BLOCKSIZE),
         }
     }
 
@@ -285,6 +319,9 @@ impl LeanState {
 // ---------------------------------------------------------------------------
 
 /// Marginal score of adding pair (i,j).
+///
+/// Uses raw pointer indexing on distance matrices for performance —
+/// indices are always within bounds (1..=nres, verified by caller).
 fn addscore(
     i: usize,
     j: usize,
@@ -297,13 +334,19 @@ fn addscore(
     let mut dx = scorefun_w(zero, zero, wght);
     let iold = state.ali2[j] as usize;
     let jold = state.ali1[i] as i32;
+    let d1_ptr = d1.as_ptr();
+    let d2_ptr = d2.as_ptr();
+    let d1_stride = d1.strides()[0] as usize;
+    let d2_stride = d2.strides()[0] as usize;
     let mut k = 0usize;
     while (state.nextres[k] as usize) <= state.nres1 {
         k = state.nextres[k] as usize;
         let x_val = state.ali1[k] as i32;
         if k != iold && x_val != jold {
-            let s = scorefun_w(d1[[i, k]], d2[[j, x_val as usize]], wght);
-            // Fortran: dx=dx+s+s → (dx+s)+s
+            // Safety: i, k in 1..=nres1, j, x_val in 1..=nres2, within dist matrix bounds
+            let d1v = unsafe { *d1_ptr.add(i * d1_stride + k) };
+            let d2v = unsafe { *d2_ptr.add(j * d2_stride + x_val as usize) };
+            let s = scorefun_w(d1v, d2v, wght);
             dx = (dx + s) + s;
         }
     }
@@ -311,6 +354,8 @@ fn addscore(
 }
 
 /// Calculate rescore on the fly.
+///
+/// Uses raw pointer indexing on distance matrices for performance.
 fn getrescore(
     i1: usize,
     i2: usize,
@@ -321,12 +366,18 @@ fn getrescore(
 ) -> f32 {
     let zero = 0i16;
     let mut dx = scorefun_w(zero, zero, wght);
+    let d1_ptr = d1.as_ptr();
+    let d2_ptr = d2.as_ptr();
+    let d1_stride = d1.strides()[0] as usize;
+    let d2_stride = d2.strides()[0] as usize;
     let mut k = 0usize;
     while (state.nextres[k] as usize) <= state.nres1 {
         k = state.nextres[k] as usize;
         let x_val = state.ali1[k] as usize;
         if k != i1 && x_val != i2 {
-            let s = scorefun_w(d1[[i1, k]], d2[[i2, x_val]], wght);
+            let d1v = unsafe { *d1_ptr.add(i1 * d1_stride + k) };
+            let d2v = unsafe { *d2_ptr.add(i2 * d2_stride + x_val) };
+            let s = scorefun_w(d1v, d2v, wght);
             dx = (dx + s) + s;
         }
     }
@@ -366,14 +417,14 @@ fn appendcand_lean(
     }
 }
 
-/// Topology check: find genes violating sequential ordering.
-fn checktopo(
+/// Topology check: append genes violating sequential ordering to genedel.
+fn checktopo_into(
     i: usize,
     j: usize,
     blocksize: usize,
     state: &LeanState,
-) -> Vec<usize> {
-    let mut genedel = Vec::new();
+    genedel: &mut Vec<usize>,
+) {
     let nres1 = state.nres1;
 
     // Forward check
@@ -399,18 +450,16 @@ fn checktopo(
             break;
         }
     }
-
-    genedel
 }
 
-/// Find overlapping genes.
-fn geneoverlap(
+/// Append overlapping genes to genedel.
+fn geneoverlap_into(
     i: usize,
     j: usize,
     blocksize: usize,
     state: &LeanState,
-    mut genedel: Vec<usize>,
-) -> Vec<usize> {
+    genedel: &mut Vec<usize>,
+) {
     let nres1 = state.nres1;
     let nres2 = state.nres2;
 
@@ -455,34 +504,45 @@ fn geneoverlap(
             l = state.next2[l] as usize;
         }
     }
-
-    genedel
 }
 
 /// Find residues that drop to cnt==0 after gene deletion.
+///
+/// Uses `cnt_scratch` buffer on LeanState instead of HashMap for counting.
 fn gowithgenes(
     i1: usize,
     j1: i32,
     genedel: &[usize],
     state: &LeanState,
+    cnt_scratch: &mut Vec<i32>,
     blocksize: usize,
     laddition: bool,
-) -> Vec<(usize, usize)> {
-    // Copy cnt for affected positions
-    let mut tmp = std::collections::HashMap::new();
+    rem: &mut Vec<(usize, usize)>,
+) {
+    rem.clear();
+
+    // Track which positions we've touched for cleanup
+    // Use cnt_scratch as a direct copy-on-write over state.cnt
+    // We only modify positions in genedel range, so track them for reset
+    let mut touched = Vec::with_capacity(genedel.len() * blocksize);
     for &gene_i in genedel {
         for l in 0..blocksize {
             let k = gene_i + l;
-            tmp.entry(k).or_insert(state.cnt[k]);
+            if cnt_scratch[k] == state.cnt[k] {
+                // First touch — mark for cleanup
+                touched.push(k);
+            }
+            // else already touched by another gene in this batch
         }
     }
+    // Initialize scratch from state.cnt for touched positions
+    // (cnt_scratch was reset at end of previous call)
 
-    let mut rem = Vec::new();
     for &gene_i in genedel {
         for l in 0..blocksize {
             let k = gene_i + l;
-            *tmp.get_mut(&k).unwrap() -= 1;
-            if tmp[&k] == 0 {
+            cnt_scratch[k] -= 1;
+            if cnt_scratch[k] == 0 {
                 if laddition {
                     let m = k as i32 - i1 as i32;
                     if m >= 0
@@ -497,10 +557,16 @@ fn gowithgenes(
         }
     }
 
-    rem
+    // Reset scratch for touched positions
+    for &k in &touched {
+        cnt_scratch[k] = state.cnt[k];
+    }
 }
 
 /// Test adding gene (i,j): compute score change and affected residues.
+///
+/// Results are written into `genedel`, `rem`, `new_pairs` (caller-owned buffers).
+/// Returns dx (score delta).
 fn testaddition(
     i: usize,
     j: usize,
@@ -511,18 +577,22 @@ fn testaddition(
     wght: &[f32; 101],
     ltop: bool,
     lsave: bool,
-) -> (f32, Vec<(usize, usize)>, Vec<(usize, usize)>, Vec<usize>) {
-    let mut genedel = Vec::new();
+    genedel: &mut Vec<usize>,
+    rem: &mut Vec<(usize, usize)>,
+    new_pairs: &mut Vec<(usize, usize)>,
+    cnt_scratch: &mut Vec<i32>,
+) -> f32 {
+    genedel.clear();
 
     if ltop {
-        genedel = checktopo(i, j, blocksize, state);
+        checktopo_into(i, j, blocksize, state, genedel);
     }
-    genedel = geneoverlap(i, j, blocksize, state, genedel);
+    geneoverlap_into(i, j, blocksize, state, genedel);
 
-    let rem = gowithgenes(i, j as i32, &genedel, state, blocksize, true);
+    gowithgenes(i, j as i32, genedel, state, cnt_scratch, blocksize, true, rem);
 
     // New residues
-    let mut new_pairs = Vec::new();
+    new_pairs.clear();
     for l in 0..blocksize {
         if state.ali1[i + l] != (j + l) as i16 {
             new_pairs.push((i + l, j + l));
@@ -531,6 +601,11 @@ fn testaddition(
 
     // Calculate dx (f32)
     let mut dx = 0.0f32;
+
+    let d1_ptr = d1.as_ptr();
+    let d2_ptr = d2.as_ptr();
+    let d1_stride = d1.strides()[0] as usize;
+    let d2_stride = d2.strides()[0] as usize;
 
     for (inew_idx, &(i1, i2)) in new_pairs.iter().enumerate() {
         if lsave {
@@ -541,36 +616,44 @@ fn testaddition(
 
         // new × new
         for k in 0..inew_idx {
-            let s = scorefun_w(d1[[i1, new_pairs[k].0]], d2[[i2, new_pairs[k].1]], wght);
+            let d1v = unsafe { *d1_ptr.add(i1 * d1_stride + new_pairs[k].0) };
+            let d2v = unsafe { *d2_ptr.add(i2 * d2_stride + new_pairs[k].1) };
+            let s = scorefun_w(d1v, d2v, wght);
             dx = (dx + s) + s;
         }
 
         // new × rem (subtract)
-        for &(remi, remj) in &rem {
+        for &(remi, remj) in rem.iter() {
             if i1 != remi && i2 != remj {
-                let s = scorefun_w(d1[[i1, remi]], d2[[i2, remj]], wght);
+                let d1v = unsafe { *d1_ptr.add(i1 * d1_stride + remi) };
+                let d2v = unsafe { *d2_ptr.add(i2 * d2_stride + remj) };
+                let s = scorefun_w(d1v, d2v, wght);
                 dx = (dx - s) - s;
             }
         }
     }
 
     // rem × rem (subtract rescores, add cross-terms back)
-    for (k_idx, &(remi, remj)) in rem.iter().enumerate() {
+    for k_idx in 0..rem.len() {
+        let (remi, remj) = rem[k_idx];
         if lsave {
             dx -= state.rescore[state.flat_idx(remi, remj)];
         } else {
             dx -= getrescore(remi, remj, state, d1, d2, wght);
         }
         for l_idx in 0..k_idx {
-            let s = scorefun_w(d1[[remi, rem[l_idx].0]], d2[[remj, rem[l_idx].1]], wght);
+            let d1v = unsafe { *d1_ptr.add(remi * d1_stride + rem[l_idx].0) };
+            let d2v = unsafe { *d2_ptr.add(remj * d2_stride + rem[l_idx].1) };
+            let s = scorefun_w(d1v, d2v, wght);
             dx = (dx + s) + s;
         }
     }
 
-    (dx, rem, new_pairs, genedel)
+    dx
 }
 
 /// Test deleting genes: compute score change.
+/// Results written into `all_rem`. Returns dx.
 fn testdeletion(
     genedel: &[usize],
     blocksize: usize,
@@ -579,31 +662,43 @@ fn testdeletion(
     d2: &Array2<i16>,
     wght: &[f32; 101],
     lsave: bool,
-) -> (f32, Vec<(usize, usize)>) {
-    let mut all_rem = Vec::new();
+    all_rem: &mut Vec<(usize, usize)>,
+    cnt_scratch: &mut Vec<i32>,
+) -> f32 {
+    all_rem.clear();
     let mut dx = 0.0f32;
+    let mut rem_tmp = Vec::with_capacity(16);
+
+    let d1_ptr = d1.as_ptr();
+    let d2_ptr = d2.as_ptr();
+    let d1_stride = d1.strides()[0] as usize;
+    let d2_stride = d2.strides()[0] as usize;
 
     for &gene_i in genedel {
         let j = state.ali1[gene_i] as i32;
-        let rem = gowithgenes(gene_i, j, &[gene_i], state, blocksize, false);
+        let single_gene = [gene_i];
+        gowithgenes(gene_i, j, &single_gene, state, cnt_scratch, blocksize, false, &mut rem_tmp);
 
-        for (l_idx, &(i1, i2)) in rem.iter().enumerate() {
+        for l_idx in 0..rem_tmp.len() {
+            let (i1, i2) = rem_tmp[l_idx];
             if lsave {
                 dx -= state.rescore[state.flat_idx(i1, i2)];
             } else {
                 dx -= getrescore(i1, i2, state, d1, d2, wght);
             }
             for k_idx in 0..l_idx {
-                let (j1, j2) = rem[k_idx];
-                let s = scorefun_w(d1[[i1, j1]], d2[[i2, j2]], wght);
+                let (j1, j2) = rem_tmp[k_idx];
+                let d1v = unsafe { *d1_ptr.add(i1 * d1_stride + j1) };
+                let d2v = unsafe { *d2_ptr.add(i2 * d2_stride + j2) };
+                let s = scorefun_w(d1v, d2v, wght);
                 dx = (dx + s) + s;
             }
         }
 
-        all_rem.extend(rem);
+        all_rem.extend_from_slice(&rem_tmp);
     }
 
-    (dx, all_rem)
+    dx
 }
 
 /// Execute gene and residue deletions.
@@ -657,6 +752,11 @@ fn dodeletions_lean(
     // Delete residues
     let mut ndel = 0;
     let ncand = state.ncand;
+    let d1_ptr = d1.as_ptr();
+    let d2_ptr = d2.as_ptr();
+    let d1_stride = d1.strides()[0] as usize;
+    let d2_stride = d2.strides()[0] as usize;
+
     for &(ri, rj) in rem {
         // Update nextres
         let in_ = state.nextres[ri];
@@ -676,7 +776,9 @@ fn dodeletions_lean(
                 let cjx = state.candij_j[k] as usize;
                 let mut ddx = 0.0f32;
                 if ri != cix && rj != cjx {
-                    let s = -scorefun_w(d1[[cix, ri]], d2[[cjx, rj]], wght);
+                    let d1v = unsafe { *d1_ptr.add(cix * d1_stride + ri) };
+                    let d2v = unsafe { *d2_ptr.add(cjx * d2_stride + rj) };
+                    let s = -scorefun_w(d1v, d2v, wght);
                     ddx = s + s;
                 }
                 let idx = state.flat_idx(cix, cjx);
@@ -760,12 +862,18 @@ fn doadditions_lean(
         }
 
         if lsave {
+            let d1_ptr = d1.as_ptr();
+            let d2_ptr = d2.as_ptr();
+            let d1_stride = d1.strides()[0] as usize;
+            let d2_stride = d2.strides()[0] as usize;
             for k in 1..=ncand {
                 let cix = state.candij_i[k] as usize;
                 let cjx = state.candij_j[k] as usize;
                 let mut ddx = 0.0f32;
                 if i1 != cix && j1_val != cjx {
-                    let s = scorefun_w(d1[[cix, i1]], d2[[cjx, j1_val]], wght);
+                    let d1v = unsafe { *d1_ptr.add(cix * d1_stride + i1) };
+                    let d2v = unsafe { *d2_ptr.add(cjx * d2_stride + j1_val) };
+                    let s = scorefun_w(d1v, d2v, wght);
                     ddx = s + s;
                 }
                 let idx = state.flat_idx(cix, cjx);
@@ -931,19 +1039,31 @@ fn lean_mc(
         }
     }
 
+    // Pre-allocate scratch buffers (reused across all MC iterations)
+    let mut genedel_buf = Vec::with_capacity(64);
+    let mut rem_buf = Vec::with_capacity(64);
+    let mut new_pairs_buf = Vec::with_capacity(blocksize);
+    let mut cnt_scratch = state.cnt.clone();
+    let mut genedel_trim_buf: Vec<usize> = Vec::with_capacity(1);
+    let mut rem_trim_buf = Vec::with_capacity(16);
+
     // Load initial alignment
     let mut totscore = 0.0f32;
     for i in 1..=nres1 {
         let j = initfragali[i] as i32;
         if j != 0 {
-            let (dx, rem, new_pairs, genedel) =
-                testaddition(i, j as usize, blocksize, &state, d1, d2, wght, true, lsave);
+            let dx = testaddition(
+                i, j as usize, blocksize, &state, d1, d2, wght, true, lsave,
+                &mut genedel_buf, &mut rem_buf, &mut new_pairs_buf, &mut cnt_scratch,
+            );
             bestscore = 0.0f32; // Force accept (aconitase fix)
             let (_, _, ts) = changeconfig_lean(
-                &genedel, &rem, i, j as usize, &new_pairs,
+                &genedel_buf, &rem_buf, i, j as usize, &new_pairs_buf,
                 &mut state, blocksize, d1, d2, wght,
                 dx, totscore, &mut bestscore, &mut bestali1, &mut outfragali, lsave,
             );
+            // Sync cnt_scratch after state mutation
+            cnt_scratch.copy_from_slice(&state.cnt);
             totscore = ts;
         }
     }
@@ -987,15 +1107,19 @@ fn lean_mc(
             let ix = di[q] as usize;
             let (i, j) = tetrapool[ix - 1];
             if state.fragali1[i] != j as i16 {
-                let (dx, rem, new_pairs, genedel) =
-                    testaddition(i, j, blocksize, &state, d1, d2, wght, true, lsave);
+                let dx = testaddition(
+                    i, j, blocksize, &state, d1, d2, wght, true, lsave,
+                    &mut genedel_buf, &mut rem_buf, &mut new_pairs_buf, &mut cnt_scratch,
+                );
                 let p = getp(alfa * dx);
                 if RNG_CONSTANT < p {
                     let (ndel, nacc, ts) = changeconfig_lean(
-                        &genedel, &rem, i, j, &new_pairs,
+                        &genedel_buf, &rem_buf, i, j, &new_pairs_buf,
                         &mut state, blocksize, d1, d2, wght,
                         dx, totscore, &mut bestscore, &mut bestali1, &mut outfragali, lsave,
                     );
+                    // Sync cnt_scratch after state mutation
+                    cnt_scratch.copy_from_slice(&state.cnt);
                     totscore = ts;
                     ndel_total += ndel;
                     nacc_total += nacc;
@@ -1013,15 +1137,19 @@ fn lean_mc(
             while (state.next1[i] as usize) <= nres1 {
                 i = state.next1[i] as usize;
                 if cnt_at_end(&state.cnt, i, blocksize) {
-                    let genedel_trim = vec![i];
-                    let (dx_trim, rem_trim) =
-                        testdeletion(&genedel_trim, blocksize, &state, d1, d2, wght, lsave);
+                    genedel_trim_buf.clear();
+                    genedel_trim_buf.push(i);
+                    let dx_trim = testdeletion(
+                        &genedel_trim_buf, blocksize, &state, d1, d2, wght, lsave,
+                        &mut rem_trim_buf, &mut cnt_scratch,
+                    );
                     if dx_trim > 0.0f32 {
                         let (ndel, nacc, ts) = changeconfig_lean(
-                            &genedel_trim, &rem_trim, 0, 0, &[],
+                            &genedel_trim_buf, &rem_trim_buf, 0, 0, &[],
                             &mut state, blocksize, d1, d2, wght,
                             dx_trim, totscore, &mut bestscore, &mut bestali1, &mut outfragali, lsave,
                         );
+                        cnt_scratch.copy_from_slice(&state.cnt);
                         totscore = ts;
                         ndel_total += ndel;
                         nacc_total += nacc;

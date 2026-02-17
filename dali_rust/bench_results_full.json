@@ -1,0 +1,266 @@
+{
+  "WOLF": {
+    "rust": {
+      "method": "WOLF",
+      "backend": "rust",
+      "pairs": [
+        {
+          "cd1": "101mA",
+          "cd2": "1a00A",
+          "elapsed_ms": 1.204,
+          "n_results": 1
+        },
+        {
+          "cd1": "101mA",
+          "cd2": "1binA",
+          "elapsed_ms": 3.251,
+          "n_results": 1
+        },
+        {
+          "cd1": "1a87A",
+          "cd2": "1allA",
+          "elapsed_ms": 0.504,
+          "n_results": 0
+        },
+        {
+          "cd1": "1a87A",
+          "cd2": "101mA",
+          "elapsed_ms": 0.366,
+          "n_results": 0
+        },
+        {
+          "cd1": "1a87A",
+          "cd2": "1binA",
+          "elapsed_ms": 0.397,
+          "n_results": 0
+        },
+        {
+          "cd1": "101mA",
+          "cd2": "1allA",
+          "elapsed_ms": 1.745,
+          "n_results": 1
+        }
+      ],
+      "total_ms": 7.48
+    },
+    "fortran": {
+      "method": "WOLF",
+      "backend": "fortran",
+      "pairs": [
+        {
+          "cd1": "101mA",
+          "cd2": "1a00A",
+          "elapsed_ms": 2.048,
+          "n_results": 0
+        },
+        {
+          "cd1": "101mA",
+          "cd2": "1binA",
+          "elapsed_ms": 3.035,
+          "n_results": 0
+        },
+        {
+          "cd1": "1a87A",
+          "cd2": "1allA",
+          "elapsed_ms": 1.813,
+          "n_results": 0
+        },
+        {
+          "cd1": "1a87A",
+          "cd2": "101mA",
+          "elapsed_ms": 1.743,
+          "n_results": 0
+        },
+        {
+          "cd1": "1a87A",
+          "cd2": "1binA",
+          "elapsed_ms": 1.976,
+          "n_results": 0
+        },
+        {
+          "cd1": "101mA",
+          "cd2": "1allA",
+          "elapsed_ms": 2.532,
+          "n_results": 0
+        }
+      ],
+      "total_ms": 17.097
+    }
+  },
+  "PARSI": {
+    "rust": {
+      "method": "PARSI",
+      "backend": "rust",
+      "pairs": [
+        {
+          "cd1": "101mA",
+          "cd2": "1a00A",
+          "elapsed_ms": 51.196,
+          "n_results": 11
+        },
+        {
+          "cd1": "101mA",
+          "cd2": "1binA",
+          "elapsed_ms": 47.836,
+          "n_results": 11
+        },
+        {
+          "cd1": "1a87A",
+          "cd2": "1allA",
+          "elapsed_ms": 125.211,
+          "n_results": 37
+        },
+        {
+          "cd1": "1a87A",
+          "cd2": "101mA",
+          "elapsed_ms": 121.546,
+          "n_results": 39
+        },
+        {
+          "cd1": "1a87A",
+          "cd2": "1binA",
+          "elapsed_ms": 93.243,
+          "n_results": 37
+        },
+        {
+          "cd1": "101mA",
+          "cd2": "1allA",
+          "elapsed_ms": 44.323,
+          "n_results": 11
+        }
+      ],
+      "total_ms": 484.217
+    },
+    "fortran": {
+      "method": "PARSI",
+      "backend": "fortran",
+      "pairs": [
+        {
+          "cd1": "101mA",
+          "cd2": "1a00A",
+          "elapsed_ms": 20.727,
+          "n_results": 11
+        },
+        {
+          "cd1": "101mA",
+          "cd2": "1binA",
+          "elapsed_ms": 18.748,
+          "n_results": 11
+        },
+        {
+          "cd1": "1a87A",
+          "cd2": "1allA",
+          "elapsed_ms": 57.804,
+          "n_results": 35
+        },
+        {
+          "cd1": "1a87A",
+          "cd2": "101mA",
+          "elapsed_ms": 51.559,
+          "n_results": 38
+        },
+        {
+          "cd1": "1a87A",
+          "cd2": "1binA",
+          "elapsed_ms": 42.708,
+          "n_results": 36
+        },
+        {
+          "cd1": "101mA",
+          "cd2": "1allA",
+          "elapsed_ms": 18.407,
+          "n_results": 11
+        }
+      ],
+      "total_ms": 221.357
+    }
+  },
+  "PIPELINE": {
+    "rust": {
+      "method": "PIPELINE",
+      "backend": "rust",
+      "pairs": [
+        {
+          "cd1": "101mA",
+          "cd2": "1a00A",
+          "elapsed_ms": 657.264,
+          "n_results": 4
+        },
+        {
+          "cd1": "101mA",
+          "cd2": "1binA",
+          "elapsed_ms": 507.031,
+          "n_results": 2
+        },
+        {
+          "cd1": "1a87A",
+          "cd2": "1allA",
+          "elapsed_ms": 1676.139,
+          "n_results": 4
+        },
+        {
+          "cd1": "1a87A",
+          "cd2": "101mA",
+          "elapsed_ms": 1526.798,
+          "n_results": 3
+        },
+        {
+          "cd1": "1a87A",
+          "cd2": "1binA",
+          "elapsed_ms": 1467.615,
+          "n_results": 2
+        },
+        {
+          "cd1": "101mA",
+          "cd2": "1allA",
+          "elapsed_ms": 604.884,
+          "n_results": 3
+        }
+      ],
+      "total_ms": 6442.764
+    },
+    "fortran": {
+      "method": "PIPELINE",
+      "backend": "fortran",
+      "pairs": [
+        {
+          "cd1": "101mA",
+          "cd2": "1a00A",
+          "elapsed_ms": 285.815,
+          "n_results": 0
+        },
+        {
+          "cd1": "101mA",
+          "cd2": "1binA",
+          "elapsed_ms": 147.601,
+          "n_results": 0
+        },
+        {
+          "cd1": "1a87A",
+          "cd2": "1allA",
+          "elapsed_ms": 289.091,
+          "n_results": 0
+        },
+        {
+          "cd1": "1a87A",
+          "cd2": "101mA",
+          "elapsed_ms": 230.207,
+          "n_results": 0
+        },
+        {
+          "cd1": "1a87A",
+          "cd2": "1binA",
+          "elapsed_ms": 175.691,
+          "n_results": 0
+        },
+        {
+          "cd1": "101mA",
+          "cd2": "1allA",
+          "elapsed_ms": 194.406,
+          "n_results": 0
+        }
+      ],
+      "total_ms": 1369.353
+    }
+  }
+}
