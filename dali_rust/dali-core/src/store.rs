@@ -111,6 +111,23 @@ impl ProteinStore {
         Ok(arc)
     }
 
+    /// Add a protein to the store: write .dat file, cache it, clear stale distance matrices.
+    pub fn add_protein(&self, protein: Protein) -> Result<(), dat::DatError> {
+        let code = protein.code.clone();
+        let filepath = self.dat_dir.join(format!("{}.dat", code));
+        dat::write_dat(&protein, &filepath)?;
+
+        let arc = Arc::new(protein);
+        let mut cache = self.proteins.write().unwrap();
+        cache.insert(code.clone(), arc);
+
+        // Clear stale distance matrices
+        self.dist_scale10.write().unwrap().remove(&code);
+        self.dist_scale100.write().unwrap().remove(&code);
+
+        Ok(())
+    }
+
     /// Check if a protein is already cached.
     pub fn has_protein(&self, code: &str) -> bool {
         self.proteins.read().unwrap().contains_key(code)

@@ -15,6 +15,6 @@ pub use types::{
     Protein, Segment, SseType, DomainNode, NodeType, ResidNumbering,
     Alignment, AlignmentBlock, ScoredAlignment, DccpEntry, ParsiHit,
     DistMatScale10, DistMatScale100, DaliconDistMat, ParsiDistMat,
-    compress_blocks,
+    compress_blocks, SearchHit, mask_protein,
 };
 pub use store::ProteinStore;

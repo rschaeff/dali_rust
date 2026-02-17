@@ -8,7 +8,7 @@ use dali_core::io::{dat, import};
 use dali_core::numerics::compute_transform;
 use dali_core::pipeline;
 use dali_core::store::ProteinStore;
-use dali_core::{AlignmentBlock, DccpEntry, Protein};
+use dali_core::{AlignmentBlock, DccpEntry, Protein, SearchHit, mask_protein};
 
 // ── PyAlignmentBlock ──────────────────────────────────────────────
 
@@ -157,6 +157,13 @@ impl PyProteinStore {
         self.inner.get_protein(code)
             .map(|p| PyProtein { inner: p })
             .map_err(|e| PyValueError::new_err(format!("{:?}", e)))
+    }
+
+    /// Add a protein to the store: writes .dat, caches, clears stale dist matrices.
+    fn add_protein(&self, protein: &PyProtein) -> PyResult<()> {
+        let p = (*protein.inner).clone();
+        self.inner.add_protein(p)
+            .map_err(|e| PyValueError::new_err(format!("{}", e)))
     }
 
     fn __len__(&self) -> usize { self.inner.len() }
@@ -394,6 +401,111 @@ fn write_dat(protein: &PyProtein, path: &str) -> PyResult<()> {
         .map_err(|e| PyValueError::new_err(format!("{}", e)))
 }
 
+// ── PySearchHit ──────────────────────────────────────────────────
+
+/// Result of a single hit from iterative database search.
+#[pyclass(name = "SearchHit")]
+struct PySearchHit {
+    inner: SearchHit,
+}
+
+#[pymethods]
+impl PySearchHit {
+    #[getter]
+    fn cd2(&self) -> &str { &self.inner.cd2 }
+
+    #[getter]
+    fn zscore(&self) -> f64 { self.inner.zscore }
+
+    #[getter]
+    fn score(&self) -> f64 { self.inner.score }
+
+    #[getter]
+    fn rmsd(&self) -> f64 { self.inner.rmsd }
+
+    #[getter]
+    fn nblock(&self) -> usize { self.inner.nblock }
+
+    #[getter]
+    fn blocks(&self) -> Vec<PyAlignmentBlock> {
+        self.inner.blocks.iter().map(PyAlignmentBlock::from).collect()
+    }
+
+    #[getter]
+    fn rotation(&self) -> Vec<Vec<f64>> {
+        (0..3).map(|i| (0..3).map(|j| self.inner.rotation[[i, j]]).collect()).collect()
+    }
+
+    #[getter]
+    fn translation(&self) -> Vec<f64> {
+        self.inner.translation.to_vec()
+    }
+
+    #[getter]
+    fn alignments(&self) -> Vec<(usize, usize)> {
+        self.inner.alignments.clone()
+    }
+
+    #[getter]
+    fn round(&self) -> usize { self.inner.round }
+
+    fn __repr__(&self) -> String {
+        format!("SearchHit(cd2='{}', zscore={:.1}, score={:.1}, rmsd={:.1}, nblock={}, round={})",
+                self.inner.cd2, self.inner.zscore, self.inner.score,
+                self.inner.rmsd, self.inner.nblock, self.inner.round)
+    }
+}
+
+// ── New module-level functions ────────────────────────────────────
+
+/// Create a masked protein containing only the specified residues.
+#[pyfunction]
+#[pyo3(name = "mask_protein")]
+fn py_mask_protein(protein: &PyProtein, keep_indices: Vec<usize>, new_code: &str) -> PyProtein {
+    let masked = mask_protein(&protein.inner, &keep_indices, new_code);
+    PyProtein { inner: Arc::new(masked) }
+}
+
+/// One-to-many structural search with query-side amortization.
+#[pyfunction]
+#[pyo3(signature = (query, targets, store, z_cut=2.0, skip_wolf=false))]
+fn search_database(
+    query: &str,
+    targets: Vec<String>,
+    store: &PyProteinStore,
+    z_cut: f64,
+    skip_wolf: bool,
+) -> Vec<PyDccpEntry> {
+    let refs: Vec<&str> = targets.iter().map(|s| s.as_str()).collect();
+    pipeline::search_database(query, &refs, &store.inner, z_cut, skip_wolf)
+        .into_iter()
+        .map(|e| PyDccpEntry { inner: e })
+        .collect()
+}
+
+/// Iterative multi-domain detection: search → take best → mask → repeat.
+#[pyfunction]
+#[pyo3(signature = (query, targets, store, *, min_aligned=20, min_zscore=2.0, gap_tolerance=5, max_rounds=10, skip_wolf=false))]
+fn iterative_search(
+    query: &str,
+    targets: Vec<String>,
+    store: &PyProteinStore,
+    min_aligned: usize,
+    min_zscore: f64,
+    gap_tolerance: usize,
+    max_rounds: usize,
+    skip_wolf: bool,
+) -> Vec<PySearchHit> {
+    let refs: Vec<&str> = targets.iter().map(|s| s.as_str()).collect();
+    pipeline::iterative_search(
+        query, &refs, &store.inner,
+        min_aligned, min_zscore, gap_tolerance, max_rounds, skip_wolf,
+    )
+    .into_iter()
+    .map(|h| PySearchHit { inner: h })
+    .collect()
+}
+
 // ── Module definition ─────────────────────────────────────────────
 
 #[pymodule]
@@ -403,6 +515,7 @@ fn dali(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<PyProtein>()?;
     m.add_class::<PyProteinStore>()?;
     m.add_class::<PyAlignResult>()?;
+    m.add_class::<PySearchHit>()?;
     m.add_function(wrap_pyfunction!(compare_pair, m)?)?;
     m.add_function(wrap_pyfunction!(run_wolf_path, m)?)?;
     m.add_function(wrap_pyfunction!(run_parsi_path, m)?)?;
@@ -410,5 +523,8 @@ fn dali(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(import_pdb, m)?)?;
     m.add_function(wrap_pyfunction!(align_pdb, m)?)?;
     m.add_function(wrap_pyfunction!(write_dat, m)?)?;
+    m.add_function(wrap_pyfunction!(py_mask_protein, m)?)?;
+    m.add_function(wrap_pyfunction!(search_database, m)?)?;
+    m.add_function(wrap_pyfunction!(iterative_search, m)?)?;
     Ok(())
 }
