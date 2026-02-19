@@ -1,6 +1,11 @@
 # Pre-DPAM Integration: Current State of Rust DALI
 
 **Date:** 2026-02-14
+**Status:** HISTORICAL -- All gaps identified here were resolved in Phases 10-11.
+See `DEFICIENCY_REPORT_DPAM_INTEGRATION.md` for the integration test results and
+fixes. The items in sections 5 ("Missing"), 8 ("Known Limitations"), and 9
+("What Integration Requires") have all been implemented.
+
 **Purpose:** Document the state of the Rust DALI reimplementation before integrating
 it into DPAM v2's Step 7 (Iterative DALI) pipeline.
 

@@ -146,56 +146,32 @@ SSE-sensitive boundary detection.
 
 ## Reimplementation Notes
 
-### Not a priority for initial reimplementation
+### Implemented in Rust (Phase 8)
 
-The import pipeline (PDB -> DSSP -> .dat) is upstream of the comparison
-algorithm. For validation purposes, we can use the existing .dat files
-directly — the comparison algorithm reads .dat, not DSSP.
+The full import pipeline (PDB/CIF -> DSSP -> secstr -> domain -> Protein) was
+reimplemented in Rust (`dali-core/src/io/`):
 
-### Drop-in replacement is straightforward
+- **`dssp.rs`** (~420 lines): Kabsch-Sander H-bond energy calculation, bridge/helix/
+  turn/bend detection, 8-state assignment. Key implementation details: Q = +27888,
+  H position = N + unit(prev_C - prev_O), priority H > B > E > G > I > T > S > ' '.
+- **`secstr.rs`** (~230 lines): 3-state reduction (G,I,H->H; E->E; else->L) +
+  minimum length filtering (helix >= 6, strand >= 8) with border growth. Port of
+  `puutos.f:getsecstr()`.
+- **`domain.rs`** (~310 lines): Simplified PUU domain decomposition using CA-contact
+  binary partitioning with tau scoring.
+- **`pdb.rs`** (~210 lines): pdbtbx-based PDB/CIF/.ent.gz reader.
+- **`import.rs`** (~95 lines): Full pipeline orchestrator.
 
-The comparison algorithm only needs the 3-state reduction produced by
-`getsecstr()`. Any DSSP implementation that produces the standard 8-state
-assignment would work:
+Validation: 100% segment overlap on 5-struct corpus, 92.1% on 18-struct corpus
+vs. DaliLite's bundled dsspcmbi. The ~8% divergence on the expanded corpus is due
+to differences in the Kabsch-Sander reimplementation vs the auto-translated Pascal->C
+dsspcmbi (125K lines). For DPAM integration, this is mitigated by `.dat` file bypass
+when pre-computed Fortran segments are available.
 
-- **mkdssp** (modern C++ DSSP, maintained by PDB-REDO group)
-- **BioPython** `Bio.PDB.DSSP` (wrapper around mkdssp)
-- **pydssp** (pure Python reimplementation)
-- **biotite** `annotate_sse()` (pure Python, different algorithm)
+### CIF format support
 
-The `getsecstr()` logic itself is ~100 lines of straightforward Fortran
-that maps 8-state to 3-state and filters by length.
-
-### Future: CIF format support
-
-PDB format structure representations are becoming obsolete. The PDB archive
-has fully transitioned to mmCIF as the canonical format, and many newer
-structures (large complexes, structures from AlphaFold/ESMFold) are only
-available in CIF.
-
-A future reimplementation of the import pathway should:
-
-1. **Read mmCIF** (PDBx/mmCIF) as the primary input format, with legacy PDB
-   as a fallback. Libraries: `gemmi` (C++/Python, fast), `BioPython`
-   `MMCIFParser`, `atomium`, or direct parsing of the `_atom_site` category.
-
-2. **Compute secondary structure from coordinates** rather than requiring a
-   separate DSSP binary. Options:
-   - `mkdssp` can read mmCIF directly (v4+)
-   - `pydssp` operates on coordinate arrays
-   - `biotite` provides `annotate_sse()` from coordinate arrays
-   - Reimplement Kabsch-Sander H-bond criteria directly (the algorithm is
-     well-defined: E_hb = 0.084 * {1/rON + 1/rCH - 1/rOH - 1/rCN} * 332 kcal/mol,
-     H-bond if E < -0.5 kcal/mol)
-
-3. **Preserve the `getsecstr()` reduction** exactly — the 8-to-3 state
-   mapping and minimum length thresholds (6 residues for helices, 8 for
-   strands) are algorithmic parameters that affect downstream results.
-
-4. **Decouple the .dat format** from the import step. The .dat format itself
-   is a reasonable internal representation (SSE list + CA trace + domain tree),
-   but could be replaced with a more modern serialization (e.g., HDF5,
-   MessagePack, or even a Python dataclass serialized with pickle/JSON).
+The Rust implementation reads both PDB and mmCIF formats natively via the `pdbtbx`
+crate, with gzip support via `flate2`. No external DSSP binary is required.
 
 ### Key source files
 

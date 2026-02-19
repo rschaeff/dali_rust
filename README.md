@@ -4,7 +4,7 @@ A validated reimplementation of the [DaliLite.v5](http://ekhidna2.biocenter.hels
 
 DaliLite.v5 compares protein 3D structures by aligning their distance matrices. Written in ~8,100 lines of Fortran 77 with ~2,000 lines of Perl/shell glue, it has been in continuous use for decades in structural biology but carries severe technical debt: no tests, no documentation, implicit mutable state shared across modules, and a build pipeline that communicates through numbered Fortran file units, shell `cat`, and Perl regex scripts.
 
-This reimplementation provides a fully standalone compiled replacement that reads PDB/CIF files directly, computes DSSP secondary structure, builds domain decompositions, and runs the full DALI comparison pipeline with no external dependencies.
+This reimplementation provides a fully standalone compiled replacement that reads PDB/CIF files directly, computes DSSP secondary structure, builds domain decompositions, and runs the full DALI comparison pipeline with no external dependencies. It additionally provides database search and iterative multi-domain detection APIs not available in the original.
 
 ## Pipeline Architecture
 
@@ -42,6 +42,7 @@ Ground truth is captured stage-by-stage from the reference Fortran binary and co
 
 - **5-structure corpus**: 101mA, 1a00A, 1a87A, 1allA, 1binA (141-297 residues)
 - **18-structure corpus** (ECOD-diverse): 62-456 residues, 4-30 SSEs, all major fold types
+- **785-protein batch** (DPAM archaea tier1): real workload, iterative search against ~200 templates
 
 ### Rust vs Fortran Ground Truth
 
@@ -57,9 +58,18 @@ Ground truth is captured stage-by-stage from the reference Fortran binary and co
 
 PARSI mismatches are inherent to branch-and-bound with quantized scoring: +/-1 differences in int16 distance quantization propagate through pruning, causing search paths to diverge. End-to-end results are unaffected.
 
+### Batch Validation (785 proteins)
+
+Domain-level comparison of Rust `iterative_search` vs Fortran iterative DALI on real DPAM workload:
+
+- **Precision**: 99.1% (Rust hits match a Fortran template)
+- **Recall**: z >= 15: 99.6%, z >= 10: 98.5%, z >= 5: 93.8%, z >= 2: 67.5%
+- **Novel detections**: 112 domains found by Rust but not Fortran (63 at z >= 10)
+- **0 errors, 0 crashes** across 785 proteins
+
 ### Automated Tests
 
-61 Rust tests + 9 Python binding tests, all passing:
+87 tests (61 Rust + 26 Python), all passing:
 
 | Test Suite | Tests | Description |
 |-----------|-------|-------------|
@@ -67,7 +77,7 @@ PARSI mismatches are inherent to branch-and-bound with quantized scoring: +/-1 d
 | DAT reader | 10 | .dat file parsing + domain filtering |
 | Scoring | 2 | Distance matrices, Z-scores |
 | Store | 4 | ProteinStore caching |
-| WOLF | 3 | 5-struct + 18-struct validation |
+| WOLF | 4 | 5-struct + 18-struct validation |
 | DP | 2 | 5-struct + 18-struct |
 | DALICON | 4 | 5-struct + 18-struct |
 | PARSI | 4 | 5-struct + 18-struct |
@@ -75,19 +85,22 @@ PARSI mismatches are inherent to branch-and-bound with quantized scoring: +/-1 d
 | E2E pipeline | 1 | 3 reference pairs, 10 DCCP entries |
 | Import | 4 | PDB reader + full import pipeline |
 | Write/roundtrip | 1 | write_dat -> read_dat -> compare |
-| PyO3 bindings | 9 | Full Python API coverage |
+| PyO3 bindings | 10 | Full Python API coverage |
+| Align coverage | 7 | PDB offsets, small domains, .dat bypass, rotation |
+| Search/iteration | 9 | mask, add, search, skip_wolf, iterative |
 
 ## Performance
 
-Benchmarked on Xeon (release + LTO + target-cpu=native + PGO + bit-packed):
+Benchmarked on Xeon (release + LTO + target-cpu=native + Rayon parallelism):
 
 | Benchmark | Rust | Fortran | Ratio |
 |-----------|------|---------|-------|
-| Single pair (101mA vs 1a00A) | 0.63s | 0.39s | 1.6x |
-| 20 directed pairs (5 structures) | 19.0s | 7.76s | 2.45x |
-| WOLF-only (20 pairs) | 0.30s | -- | -- |
+| Same-fold pairs (101mA vs 1a00A) | 131ms | 288ms | **0.46x (Rust wins)** |
+| 20 directed pairs (5 structures) | 2.24s | 1.34s | 1.68x |
 
-PARSI (branch-and-bound) accounts for ~96% of pipeline runtime. The remaining gap vs Fortran is in PARSI scoring inner loops where gfortran benefits from column-major array layout and aggressive scalar optimization.
+Rust wins 3 of 6 benchmark pairs (all same-fold). The remaining gap is in PARSI
+branch-and-bound inner loops where gfortran benefits from column-major array layout
+and no-alias guarantees. See `docs/performance_ceiling.md` for full analysis.
 
 ## Python API
 
@@ -110,35 +123,46 @@ results = dali.compare_pair("101mA", "1a00A", store)
 for r in results:
     print(f"{r.cd1} vs {r.cd2}: score={r.score:.1f}, z={r.zscore:.1f}, rmsd={r.rmsd:.1f}")
 
-# Individual paths
-wolf_results = dali.run_wolf_path("101mA", ["1a00A", "1binA"], store)
-parsi_results = dali.run_parsi_path("101mA", ["1a00A"], store)
+# Database search (one-to-many)
+hits = dali.search_database("query", ["t1", "t2", "t3"], store, z_cut=2.0)
+
+# Iterative multi-domain detection
+domains = dali.iterative_search("query", targets, store,
+    min_zscore=2.0, skip_wolf=True)
+for d in domains:
+    print(f"Round {d.round}: {d.cd2} z={d.zscore:.1f}, {d.nblock} blocks")
 
 # PDB-to-PDB alignment (imports, compares, returns rotation/translation)
-result = dali.align_pdb("query.pdb", "template.pdb", query_chain="A", template_chain="A")
+result = dali.align_pdb("query.pdb", "template.pdb",
+    query_chain="A", template_chain="A",
+    query_code="q", template_code="t",
+    template_dat="/path/to/template.dat")  # optional DSSP bypass
 if result:
     print(f"Z-score: {result.zscore:.1f}, aligned: {result.n_aligned}")
     print(f"Rotation: {result.rotation}")       # 3x3 matrix
     print(f"Translation: {result.translation}")  # 3-element vector
-    for q_resid, t_resid in result.alignments:   # PDB residue numbering
+    for q_resid, t_resid in result.alignments:   # 1-based sequential indices
         print(f"  {q_resid} <-> {t_resid}")
 
 # I/O utilities
 protein = dali.read_dat("/path/to/101mA.dat")
 protein = dali.import_pdb("/path/to/pdb101m.ent.gz", "A", "101m")
+dali.write_dat(protein, "/path/to/output.dat")
+masked = dali.mask_protein(protein, [0, 1, 5, 6, 7], "subset")
 ca = protein.ca_coords()   # numpy array, shape (3, nres)
-protein.write_dat("/path/to/output.dat")
+store.add_protein(protein)  # write .dat + cache
 ```
 
 ### Types
 
 | Type | Properties |
 |------|-----------|
-| `Protein` | `.code`, `.nres`, `.nseg`, `.na`, `.nb`, `.sequence`, `.resid_map`, `.ca_coords()`, `.write_dat()` |
-| `ProteinStore` | `__init__(dat_dir)`, `.get_protein(code)`, `__contains__`, `__len__` |
+| `Protein` | `.code`, `.nres`, `.nseg`, `.na`, `.nb`, `.sequence`, `.resid_map`, `.numbering`, `.ca_coords()` |
+| `ProteinStore` | `__init__(dat_dir)`, `.get_protein(code)`, `.add_protein(protein)`, `__contains__`, `__len__` |
 | `DccpEntry` | `.cd1`, `.cd2`, `.score`, `.zscore`, `.rmsd`, `.nblock`, `.blocks` |
 | `AlignmentBlock` | `.l1`, `.r1`, `.l2`, `.r2` (1-based residue ranges) |
 | `AlignResult` | `.zscore`, `.score`, `.rmsd`, `.n_aligned`, `.alignments`, `.rotation`, `.translation`, `.blocks` |
+| `SearchHit` | `.cd2`, `.zscore`, `.score`, `.rmsd`, `.nblock`, `.blocks`, `.rotation`, `.translation`, `.alignments`, `.round` |
 
 ## Building from Source
 
@@ -162,7 +186,9 @@ cargo build --release          # Build library only
 cd dali_rust/dali-python
 pip install maturin
 maturin develop --release      # Build + install in current Python env
-python test_bindings.py        # Run 9 binding tests
+python test_bindings.py        # Run 10 binding tests
+python test_align_coverage.py  # Run 7 alignment coverage tests
+python test_search.py          # Run 9 search/iteration tests
 ```
 
 ## Project Structure
@@ -180,8 +206,8 @@ dali_cl/
 
   dali_rust/
     dali-core/
-      src/             32 files, ~9,000 lines -- Rust library
-        types/         Protein, Segment, AlignmentBlock, DccpEntry
+      src/             32+ files, ~9,900 lines -- Rust library
+        types/         Protein, Segment, AlignmentBlock, SearchHit, DccpEntry
         numerics/      nint, Kabsch/u3b, fitz, NW, scoring
         io/            .dat parser, PDB reader, DSSP, secstr, domain, import
         wolf/          SSE spatial hashing
@@ -189,14 +215,15 @@ dali_cl/
         dalicon/       GA refinement
         parsi/         Branch-and-bound
         filter95/      Redundancy filtering + FITZ
-        pipeline.rs    E2E orchestrator
-        store.rs       ProteinStore (thread-safe caching)
+        pipeline.rs    E2E orchestrator + search + iterative detection
+        store.rs       ProteinStore (thread-safe caching + add_protein)
       tests/           10 files, ~2,100 lines -- Validation tests
 
     dali-python/
-      src/lib.rs       ~370 lines  -- PyO3 bindings
-      test_bindings.py ~150 lines  -- Python binding tests
-      bench.py                     -- Performance benchmarks
+      src/lib.rs       ~530 lines  -- PyO3 bindings (7 types + 10 functions)
+      test_bindings.py ~220 lines  -- Python binding tests (10 tests)
+      test_align_coverage.py ~350 lines -- Alignment coverage tests (7 tests)
+      test_search.py   ~190 lines  -- Search/iteration tests (9 tests)
 
   docs/                Analysis and project documentation
 ```
@@ -210,6 +237,7 @@ dali_cl/
 | flate2 | 1 | Gzip decompression |
 | pyo3 | 0.23 | Python bindings |
 | numpy | 0.23 | Numpy array interop |
+| rayon | 1.10 | Pipeline parallelism |
 | approx | 0.5 | Float comparison (tests only) |
 
 ## Methodology
@@ -228,6 +256,8 @@ The reimplementation proceeded in two phases:
 - **Jacobi SVD** for 3x3 eigendecomposition (avoids LAPACK dependency)
 - **Kabsch-Sander DSSP** from scratch (~420 lines) rather than wrapping external binary
 - **Direct struct passing** between pipeline stages (no text serialization)
+- **Rayon** for 4-path pipeline parallelism (impossible in Fortran due to COMMON blocks)
+- **In-memory protein masking** for iterative domain detection (no PDB rewrite)
 
 ### Fortran Quirks Discovered
 
@@ -236,6 +266,7 @@ The reimplementation proceeded in two phases:
 - **Single-precision intermediates**: float32 arithmetic despite float64 coordinates
 - **FILTER95 stale state bug**: `lkeep` array retains values from previous protein when `idom > ndom`
 - **PARSI score table sensitivity**: +/-1 int16 quantization differences propagate through branch-and-bound pruning
+- **DALICON OOB**: accept-band `j_hi` used `nres1` instead of `nres2`; silent in Fortran, panic in Rust
 
 ## License
 
