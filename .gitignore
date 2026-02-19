@@ -4,6 +4,13 @@ __pycache__/
 
 # Rust build artifacts
 dali_rust/target/
+dali_rust/.cargo/
+dali_rust/bench_results.json
+
+# Batch validation ephemera
+validation/batch*/dat_cache/
+validation/batch*/*.err
+validation/batch*/*.log
 
 # Debug/scratch files
 debug_*.py
