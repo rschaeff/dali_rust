@@ -5,7 +5,7 @@ pub mod fitz;
 pub mod scoring;
 
 pub use rounding::{nint, nint_f32};
-pub use kabsch::{U3bResult, u3b, transrotate, compute_transform};
+pub use kabsch::{U3bResult, u3b, transrotate, compute_transform, calc_rmsd};
 pub use nw::{filltable_maxsim, nw_maxsim};
 pub use fitz::{FitzResult, fitz};
 pub use scoring::{

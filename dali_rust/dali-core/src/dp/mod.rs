@@ -8,6 +8,7 @@ use crate::types::{
     AlignmentBlock, DccpEntry, DomainNode,
 };
 use crate::numerics::scoring::{dpweights, totscore, zscore_func};
+use crate::numerics::calc_rmsd;
 use crate::store::ProteinStore;
 
 /// Default Z-score cutoff.
@@ -158,12 +159,13 @@ pub fn run_dp(
 
         // Output if any domain pair passed z cutoff
         if zmax >= zcut {
+            let rmsd = calc_rmsd(&prot1.ca, &prot2.ca, blocks);
             results.push(DccpEntry {
                 cd1: cd1.clone(),
                 cd2: cd2.clone(),
                 score: x1,
                 zscore: zmax,
-                rmsd: 9.9,
+                rmsd,
                 blocks: blocks.clone(),
             });
         }

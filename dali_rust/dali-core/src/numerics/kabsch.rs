@@ -166,18 +166,19 @@ pub fn transrotate(x: &mut Array2<f64>, u: &Array2<f64>, t: &Array1<f64>) {
 /// superposition (U, T) such that U*ca1 + T ~ ca2 for the aligned positions.
 ///
 /// Returns None if no aligned pairs exist.
-pub fn compute_transform(
-    ca1: &Array2<f64>,  // (3, nres1)
-    ca2: &Array2<f64>,  // (3, nres2)
+/// Extract aligned CA coordinate pairs from two proteins using alignment blocks.
+///
+/// Returns (x, y, n) where x and y are (3, n) coordinate arrays, or None if empty.
+fn extract_aligned_coords(
+    ca1: &Array2<f64>,
+    ca2: &Array2<f64>,
     blocks: &[crate::AlignmentBlock],
-) -> Option<(Array2<f64>, Array1<f64>)> {
-    // Count total aligned pairs
+) -> Option<(Array2<f64>, Array2<f64>, usize)> {
     let n: usize = blocks.iter().map(|b| (b.r1 - b.l1 + 1) as usize).sum();
     if n == 0 {
         return None;
     }
 
-    // Extract aligned coordinates
     let mut x = Array2::zeros((3, n));
     let mut y = Array2::zeros((3, n));
     let mut idx = 0;
@@ -194,9 +195,39 @@ pub fn compute_transform(
         }
     }
 
+    Some((x, y, n))
+}
+
+pub fn compute_transform(
+    ca1: &Array2<f64>,  // (3, nres1)
+    ca2: &Array2<f64>,  // (3, nres2)
+    blocks: &[crate::AlignmentBlock],
+) -> Option<(Array2<f64>, Array1<f64>)> {
+    let (x, y, n) = extract_aligned_coords(ca1, ca2, blocks)?;
     let w: Vec<f64> = vec![1.0; n];
     let result = u3b(&w, &x, &y, n, 1);
     Some((result.u, result.t))
+}
+
+/// Compute RMSD after optimal Kabsch superposition.
+///
+/// Follows Fortran getrmsd: extract aligned CAs, run u3b with uniform weights,
+/// return sqrt(ssq / n). Returns -9.9 on error.
+pub fn calc_rmsd(
+    ca1: &Array2<f64>,
+    ca2: &Array2<f64>,
+    blocks: &[crate::AlignmentBlock],
+) -> f64 {
+    let (x, y, n) = match extract_aligned_coords(ca1, ca2, blocks) {
+        Some(v) => v,
+        None => return -9.9,
+    };
+    let w: Vec<f64> = vec![1.0; n];
+    let result = u3b(&w, &x, &y, n, 1); // mode=1: full SVD
+    if result.ier == -2 || n == 0 {
+        return -9.9;
+    }
+    (result.rms / n as f64).sqrt()
 }
 
 // --- Internal linear algebra for 3x3 matrices ---
