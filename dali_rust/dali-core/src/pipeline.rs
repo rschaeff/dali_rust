@@ -21,7 +21,46 @@ use crate::parsi;
 use crate::filter95::{self, Filter95Entry};
 
 /// Max entries per (cd1,cd2) key from FILTER95 → DALICON.
-const PIPENBEST: usize = 2;
+const PIPENBEST_DEFAULT: usize = 2;
+
+/// FILTER95 z-score cutoff, matching `pipe96-free.pl zcut`.
+const FILTER95_ZCUT_DEFAULT: f64 = 1.0;
+
+// ---------------------------------------------------------------------------
+// Sensitivity tunables
+// ---------------------------------------------------------------------------
+//
+// The three gates below decide how many candidates survive to the next stage. Their
+// defaults reproduce the Fortran pipeline exactly and are what every previous benchmark
+// ran with; they are overridable only so a run can separate "the alignment was never
+// found" from "the alignment was found and then thresholded away", which a fixed binary
+// cannot distinguish. Setting DALI_ZCUT_DP=0 and DALI_ZCUT_FILTER95=0 emits every
+// candidate that reaches scoring, at the cost of a great deal of noise.
+//
+//   DALI_ZCUT_DP        DP output cutoff, both passes           (default 2.0)
+//   DALI_ZCUT_FILTER95  FILTER95 + pipe96 cutoff                (default 1.0)
+//   DALI_PIPENBEST      pipe96 entries kept per (cd1,cd2) key   (default 2)
+//
+// Read once per process and cached, so changing the variable mid-run does nothing.
+
+fn env_or<T: std::str::FromStr>(key: &str, default: T) -> T {
+    std::env::var(key).ok().and_then(|s| s.parse().ok()).unwrap_or(default)
+}
+
+fn zcut_dp() -> f64 {
+    static V: std::sync::OnceLock<f64> = std::sync::OnceLock::new();
+    *V.get_or_init(|| env_or("DALI_ZCUT_DP", dp::ZCUT_DEFAULT))
+}
+
+fn zcut_filter95() -> f64 {
+    static V: std::sync::OnceLock<f64> = std::sync::OnceLock::new();
+    *V.get_or_init(|| env_or("DALI_ZCUT_FILTER95", FILTER95_ZCUT_DEFAULT))
+}
+
+fn pipenbest() -> usize {
+    static V: std::sync::OnceLock<usize> = std::sync::OnceLock::new();
+    *V.get_or_init(|| env_or("DALI_PIPENBEST", PIPENBEST_DEFAULT))
+}
 
 // ---------------------------------------------------------------------------
 // Format converters
@@ -139,7 +178,7 @@ pub fn run_wolf_path(
         .map(|r| (r.cd1, r.cd2, r.blocks))
         .collect();
 
-    let dp_results = dp::run_dp(&alignments, store, 2.0);
+    let dp_results = dp::run_dp(&alignments, store, zcut_dp());
     if dp_results.is_empty() {
         return Vec::new();
     }
@@ -158,7 +197,7 @@ pub fn run_wolf_path(
         .map(|(cd1, cd2, _nblock, blocks)| (cd1, cd2, blocks))
         .collect();
 
-    dp::run_dp(&final_alignments, store, 2.0)
+    dp::run_dp(&final_alignments, store, zcut_dp())
 }
 
 /// Parsi path: PARSI → FILTER95(zcut=1.0) → pipe96(top 2) → DALICON(lfitz=T) → DP(zcut=2.0).
@@ -185,13 +224,13 @@ pub fn run_parsi_path(
     }
 
     // Step 2: FILTER95
-    let filter_results = filter95::run_filter95(&all_hits, store, Some(1.0));
+    let filter_results = filter95::run_filter95(&all_hits, store, Some(zcut_filter95()));
     if filter_results.is_empty() {
         return Vec::new();
     }
 
     // Step 3: pipe96 → DALICON input records
-    let records = filter95_to_dalicon_records(&filter_results, 1.0, PIPENBEST);
+    let records = filter95_to_dalicon_records(&filter_results, zcut_filter95(), pipenbest());
     if records.is_empty() {
         return Vec::new();
     }
@@ -208,7 +247,7 @@ pub fn run_parsi_path(
         .map(|(cd1, cd2, _nblock, blocks)| (cd1, cd2, blocks))
         .collect();
 
-    dp::run_dp(&final_alignments, store, 2.0)
+    dp::run_dp(&final_alignments, store, zcut_dp())
 }
 
 // ---------------------------------------------------------------------------
