@@ -74,6 +74,58 @@ Each of these was measured, not argued:
 
 By elimination the deficit is in the alignment search itself.
 
+## Measured: the cutoffs are not the problem (2026-10-13, jobs 685601/685602)
+
+The first experiment proposed below has been run. Both cutoffs to 0 over 300 proteins and
+190,482 template calls, against the same `dat_cache`, pool width and candidate lists, with
+a default-cutoff control arm that reproduced the compared-against arm **20/20
+byte-identical** so the result could not be the rebuild (`.cargo/config.toml` sets
+`target-cpu=native` and the nodes are Xeon Phi 7250).
+
+Every Fortran template falls in exactly one of three classes:
+
+    recalled at default cutoffs    29,333  (0.375)
+    THRESHOLDED (zcut0 recovers)    7,334  (0.094)
+    NEVER FOUND (search miss)      41,561  (0.531)
+    recall: 0.375 -> 0.469
+
+    band      fortran  recalled  thresh   never  rec@def  rec@z0
+    Z>=8        22490     18170     417    3903    0.808   0.826
+    6<=Z<8       8555      4892     736    2927    0.572   0.658
+    4<=Z<6      16870      4663    2838    9369    0.276   0.445
+    Z<4         30313      1608    3343   25362    0.053   0.163
+
+**At Z>=8 the cutoffs are worth 1.8 points, 0.808 -> 0.826.** 3,903 confident templates are
+never found at all. What the cutoffs do hold back is the twilight — Z 4-6 from 0.276 to
+0.445, Z<4 from 0.053 to 0.163 — which is the band DPAM needs least. Opening them is also
+not free: templates hit by Rust but not Fortran go from 166 to 927, a 5.6x precision cost,
+and recall still only reaches 0.469. **Lowering the cutoffs is not a fix.**
+
+The alignments being discarded are genuine, not noise: median Rust Z 2.63 against Fortran's
+4.10, and 81% within 2x of Fortran's Z.
+
+### The gate is the pre-DALICON DP pass, on unrefined scores
+
+All 7,334 recovered templates end with Z >= 2.0, so the FINAL DP gate did not drop any of
+them. A second arm with `DALI_ZCUT_DP=0` and FILTER95 left at its default 1.0 then returned
+hits **300/300 byte-identical to the both-cutoffs arm**, which locates it exactly:
+
+- **FILTER95/pipe96 at zcut 1.0 discards nothing.** Not a contributor. (`PIPENBEST = 2` may
+  still bind on the PARSI path; `DALI_PIPENBEST` is there to test that separately.)
+- **The whole thresholded population dies at the first `run_dp` call**, before DALICON.
+  That pass scores *unrefined* WOLF output at the same 2.0 as the post-refinement pass.
+  DALICON refinement raises scores — these hits end up at a median Z of 2.63 once refined —
+  so a single threshold applied before refinement discards alignments that would clear it
+  after. Fortran orders its pipeline the same way, so this is not by itself a divergence
+  from Fortran; it is where our losses are concentrated, and the cheapest knob available.
+  Whether Fortran's pre-DALICON scores sit higher than ours on the same candidates is the
+  obvious next question, and would separate "same gate, worse scores" from "same scores,
+  fewer candidates".
+
+Net: thresholding is real but second-order and twilight-only. **Candidate generation carries
+53% of the deficit, including 3,903 templates at Z>=8, and that is the deficiency.** The
+second pointer below is now the live one.
+
 ## Where to look
 
 Two observations that should narrow it, from this data rather than from inspection:
@@ -81,9 +133,8 @@ Two observations that should narrow it, from this data rather than from inspecti
 1. **The misses start far above both cutoffs.** `ZCUT_DEFAULT = 2.0` (`dali-core/src/dp/`)
    and `zcut1 = 1.0` (`dali-core/src/filter95/`) cannot explain missing 19% of templates
    whose Fortran Z is >= 8. A cutoff *may* account for part of the Z 2-6 band, where a
-   genuine Rust alignment could score under 2.0 and be discarded. **First experiment: rerun
-   a protein set with both cutoffs at 0 and re-measure recall by band.** That cleanly splits
-   thresholding from search, and it is cheap.
+   genuine Rust alignment could score under 2.0 and be discarded. This was measured and is answered above: the cutoffs account for
+   9.4 points of recall, 1.8 of them at Z>=8.
 
 2. **The asymmetry points upstream of PARSI refinement.** `parsi_mismatch_analysis.md`
    found Python/Rust sometimes finding *genuinely higher-scoring* alignments than Fortran
