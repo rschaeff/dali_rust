@@ -269,19 +269,67 @@ pub fn derive_sse_tree(
     segments: &[Segment],
     domain_tree: &[DomainNode],
 ) -> Vec<SseTreeNode> {
+    puutos(nres, segments, domain_tree).1
+}
+
+/// puutos.f on a residue-level (puu `units.puu`) tree: returns the pruned residue tree
+/// (what puutos writes as .dat section 3: surviving nodes, renumbered, with their
+/// ORIGINAL residue ranges) and the SSE tree (section 2).
+pub fn puutos(
+    nres: usize,
+    segments: &[Segment],
+    domain_tree: &[DomainNode],
+) -> (Vec<DomainNode>, Vec<SseTreeNode>) {
+    let p = prune(nres, segments, domain_tree);
+    let res_tree = p.list.iter().enumerate()
+        .map(|(i, &idom)| {
+            let src = &domain_tree[idom - 1];
+            DomainNode {
+                index: i + 1,
+                node_type: src.node_type,
+                left_child: p.tsil[p.child[idom][0]],
+                right_child: p.tsil[p.child[idom][1]],
+                nseg: src.segments.len(),
+                segments: src.segments.clone(),
+            }
+        })
+        .collect();
+    let sse_tree = p.list.iter()
+        .map(|&idom| {
+            let mut sses = p.node_sses[idom].clone();
+            sses.sort_unstable();
+            sses.dedup();
+            SseTreeNode {
+                node_type: domain_tree[idom - 1].node_type.to_char(),
+                left_child: p.tsil[p.child[idom][0]],
+                right_child: p.tsil[p.child[idom][1]],
+                sses,
+            }
+        })
+        .collect();
+    (res_tree, sse_tree)
+}
+
+/// Result of puutos prunetree, indexed by original 1-based node number.
+struct Pruned {
+    list: Vec<usize>,            // surviving nodes, in new order
+    tsil: Vec<usize>,            // original -> new index (0 = removed)
+    child: Vec<[usize; 2]>,      // children after pruning (original numbering)
+    node_sses: Vec<Vec<usize>>,  // SSEs per node (unsorted, as accumulated)
+}
+
+fn prune(nres: usize, segments: &[Segment], domain_tree: &[DomainNode]) -> Pruned {
     let ndom = domain_tree.len();
     if ndom == 0 {
-        return Vec::new();
+        return Pruned { list: Vec::new(), tsil: vec![0], child: vec![[0, 0]], node_sses: vec![Vec::new()] };
     }
 
     // 1-based node arrays, indexed by position in domain_tree (+1)
     let mut child = vec![[0usize; 2]; ndom + 1];
-    let mut node_type = vec![' '; ndom + 1];
     for (i, node) in domain_tree.iter().enumerate() {
         let idom = i + 1;
         let valid = |c: usize| if c <= ndom { c } else { 0 };
         child[idom] = [valid(node.left_child), valid(node.right_child)];
-        node_type[idom] = node.node_type.to_char();
     }
     let mut parent = vec![0usize; ndom + 1];
     for idom in 1..=ndom {
@@ -362,19 +410,7 @@ pub fn derive_sse_tree(
         }
     }
 
-    list.iter()
-        .map(|&idom| {
-            let mut sses = node_sses[idom].clone();
-            sses.sort_unstable();
-            sses.dedup();
-            SseTreeNode {
-                node_type: node_type[idom],
-                left_child: tsil[child[idom][0]],
-                right_child: tsil[child[idom][1]],
-                sses,
-            }
-        })
-        .collect()
+    Pruned { list, tsil, child, node_sses }
 }
 
 /// Section header: Fortran `('>>>> ',a4,a1,...)` layout when the code fits in 5

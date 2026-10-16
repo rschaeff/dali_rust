@@ -39,9 +39,10 @@ pub struct Segment {
 /// Node type in the domain decomposition tree.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum NodeType {
-    Root,  // '*'
-    Split, // '+'
-    Minus, // '-'
+    Root,  // '*'  structural domain
+    Split, // '+'  above structural domains
+    Minus, // '-'  below structural domains
+    Small, // '='  short flexible piece (<= 40 residues)
 }
 
 impl NodeType {
@@ -49,6 +50,7 @@ impl NodeType {
         match c {
             '*' => NodeType::Root,
             '+' => NodeType::Split,
+            '=' => NodeType::Small,
             _ => NodeType::Minus,
         }
     }
@@ -58,6 +60,7 @@ impl NodeType {
             NodeType::Root => '*',
             NodeType::Split => '+',
             NodeType::Minus => '-',
+            NodeType::Small => '=',
         }
     }
 }
