@@ -205,9 +205,14 @@ fn testi(
     for i in 1..=nres1 {
         let k = preali1[i] as i32;
         if k > 0 {
-            let j_lo = 1.max(k - 3) as usize;
-            let j_hi = ((nres2 as i32).min(k + 3)) as usize;
-            for j in j_lo..=j_hi {
+            // testi.f: do j=max(1,k-3),min(nres1-3,k+3) -- bounded by nres1, not
+            // nres2. That is what DaliLite does; when nres1 > nres2 the writes past
+            // column nres2 land in Fortran's static map and are never read (the
+            // tetrapeptide sums only read j <= nres2), so they are skipped here.
+            let j_lo = 1.max(k - 3);
+            let j_hi = (nres1 as i32 - 3).min(k + 3).min(nres2 as i32);
+            if j_lo > j_hi { continue; }
+            for j in j_lo as usize..=j_hi as usize {
                 let idx = i * stride + j;
                 score_vals[idx] = 1.0f32;
                 has_score[idx] = true;
