@@ -172,9 +172,10 @@ fn test_parsi_5_structures() {
         }
     }
 
+    // Every refine line reproduces DaliLite's (2026-10-16).
     assert!(
-        matched >= 300,
-        "PARSI 5-struct: only {}/{} matched ({:.1}%), expected >=300 (~69%)",
+        matched == total,
+        "PARSI 5-struct: only {}/{} matched ({:.1}%), expected all",
         matched, total, pct
     );
 }
@@ -205,10 +206,10 @@ fn run_parsi_18_group(codes: &[&str], label: &str) {
         }
     }
 
-    // Expect at least 59% match (search divergence)
+    // Every refine line reproduces DaliLite's (2026-10-16).
     assert!(
-        pct >= 59.0 || total < 10,
-        "PARSI {}: only {}/{} matched ({:.1}%), expected >=59%",
+        matched == total,
+        "PARSI {}: only {}/{} matched ({:.1}%), expected all",
         label, matched, total, pct
     );
 }

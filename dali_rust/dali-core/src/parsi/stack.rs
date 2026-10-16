@@ -3,8 +3,9 @@
 //! Bit-packed SearchState: 1 bit per candidate per segment (~20 bytes/state
 //! vs ~32KB with flat arrays). Matches Fortran's compact representation.
 
-use std::collections::BinaryHeap;
-use super::{NUL, INFINIT, MAXRES0};
+use std::cmp::Reverse;
+use std::collections::BTreeMap;
+use super::{NUL, INFINIT, MAXRES0, MAXSTACK};
 use super::scoring::{get_ess, get_ess_into, get_estimate};
 
 /// A search state: score estimate + bit-packed candidate masks.
@@ -16,37 +17,31 @@ pub struct SearchState {
     pub bits: Vec<u32>,
 }
 
-impl PartialEq for SearchState {
-    fn eq(&self, other: &Self) -> bool { self.est == other.est }
-}
-impl Eq for SearchState {}
-impl PartialOrd for SearchState {
-    fn partial_cmp(&self, other: &Self) -> Option<std::cmp::Ordering> {
-        Some(self.cmp(other))
-    }
-}
-impl Ord for SearchState {
-    fn cmp(&self, other: &Self) -> std::cmp::Ordering {
-        self.est.cmp(&other.est)
-    }
-}
-
-/// Score-ordered priority queue of search states.
-/// Uses BinaryHeap (max-heap) for O(log n) push/pop.
-/// Stores bit-packing layout for pack/unpack operations.
+/// Port of parsi-stack.f's stack: chunks in STORAGE order plus a linked list
+/// ordered by estimate.
+///
+/// createlink inserts a chunk after the last one with a strictly greater
+/// estimate, i.e. in front of equal ones, so list order is (estimate desc,
+/// insertion order desc); swapstack preserves it.  That order is kept in a
+/// BTreeMap (the box index of getk only accelerates the same insertion).
+/// Storage order matters too: toprequest swaps the best chunk into the top slot,
+/// and declump/clearstack walk the chunks in storage order.  Capacity is in words
+/// (chunk = 1 + (sum mi + 30)/31 per state, maxstack = 10000), as in Fortran.
 pub struct PriorityStack {
-    pub states: BinaryHeap<SearchState>,
-    pub overflow_limit: usize,
-    /// bit_offset[seg] = starting bit position for segment seg's candidates.
-    /// Only meaningful for segments in the active seglist.
+    slots: Vec<SearchState>,
+    slot_seq: Vec<u64>,
+    order: BTreeMap<(Reverse<i32>, Reverse<u64>), usize>,
+    next_seq: u64,
+    /// Fortran chunk size in words
+    pub chunk: usize,
+    /// set when a push would exceed maxstack (Fortran 'FATAL ERROR in
+    /// putrequest', lskipflag): the caller abandons the protein pair
+    pub aborted: bool,
     bit_offset: Vec<usize>,
-    /// Number of u32 words needed per state's bit vector.
     words_per_state: usize,
 }
 
 impl PriorityStack {
-    /// Create a new priority stack with bit-packing layout for the given domain.
-    /// `ns` segments from `seglist`, with `mi[seg]` max candidates per segment.
     pub fn new(ns: usize, seglist: &[usize], mi: &[i32], nseg: usize) -> Self {
         let mut bit_offset = vec![0usize; nseg];
         let mut total_bits = 0usize;
@@ -56,8 +51,12 @@ impl PriorityStack {
             total_bits += mi[seg] as usize;
         }
         PriorityStack {
-            states: BinaryHeap::new(),
-            overflow_limit: 10000,
+            slots: Vec::new(),
+            slot_seq: Vec::new(),
+            order: BTreeMap::new(),
+            next_seq: 0,
+            chunk: 1 + (total_bits + 30) / 31,
+            aborted: false,
             bit_offset,
             words_per_state: (total_bits + 31) / 32,
         }
@@ -80,7 +79,8 @@ impl PriorityStack {
         SearchState { est, bits }
     }
 
-    /// Unpack a bit-packed SearchState into flat ni/ci arrays.
+    /// Unpack a bit-packed SearchState into flat ni/ci arrays (ascending, as
+    /// Fortran's translatechunk).
     #[inline]
     pub fn unpack(&self, state: &SearchState, ni: &mut [i32], ci: &mut [i32],
                   nseg: usize, ns: usize, seglist: &[usize], mi: &[i32]) {
@@ -100,32 +100,82 @@ impl PriorityStack {
         }
     }
 
+    /// Fortran `top`: word position of the last chunk (1-chunk when empty).
+    pub fn top(&self) -> i64 {
+        1 + (self.slots.len() as i64 - 1) * self.chunk as i64
+    }
+
+    /// putrequest: store at the next slot and link in. Refused (and `aborted`
+    /// set) when the chunk would run past maxstack.
     pub fn push(&mut self, state: SearchState) {
-        self.states.push(state);
+        if self.aborted {
+            return;
+        }
+        let to = self.top() + self.chunk as i64;
+        if to + self.chunk as i64 > MAXSTACK as i64 {
+            self.aborted = true;
+            return;
+        }
+        let slot = self.slots.len();
+        let seq = self.next_seq;
+        self.next_seq += 1;
+        self.order.insert((Reverse(state.est), Reverse(seq)), slot);
+        self.slots.push(state);
+        self.slot_seq.push(seq);
     }
 
+    /// toprequest: swap the best chunk into the top slot, then remove it.
     pub fn pop_best(&mut self) -> Option<SearchState> {
-        self.states.pop()
+        let (&key, &b) = self.order.iter().next()?;
+        let t = self.slots.len() - 1;
+        if b != t {
+            let tkey = (Reverse(self.slots[t].est), Reverse(self.slot_seq[t]));
+            self.slots.swap(b, t);
+            self.slot_seq.swap(b, t);
+            self.order.insert(tkey, b);
+        }
+        self.order.remove(&key);
+        self.slot_seq.pop();
+        self.slots.pop()
     }
 
-    pub fn peek_best(&self) -> Option<&SearchState> {
-        self.states.peek()
+    pub fn best_est(&self) -> Option<i32> {
+        self.order.keys().next().map(|k| k.0 .0)
+    }
+
+    /// Estimate of the list element `n` steps below the best (dostack overflow).
+    pub fn est_at_rank(&self, n: usize) -> Option<i32> {
+        self.order.keys().nth(n).map(|k| k.0 .0)
     }
 
     pub fn size(&self) -> usize {
-        self.states.len()
+        self.slots.len()
     }
 
     pub fn is_empty(&self) -> bool {
-        self.states.is_empty()
+        self.slots.is_empty()
     }
 
-    /// Remove all states with estimate <= cutoff.
+    /// clearstack: keep chunks with estimate > cutoff, compacted in storage
+    /// order, list order unchanged.
     pub fn clearstack(&mut self, cutoff: i32) {
-        let old = std::mem::take(&mut self.states);
-        self.states = old.into_vec().into_iter()
-            .filter(|s| s.est > cutoff)
-            .collect();
+        let slots = std::mem::take(&mut self.slots);
+        let seqs = std::mem::take(&mut self.slot_seq);
+        self.order.clear();
+        for (st, sq) in slots.into_iter().zip(seqs) {
+            if st.est > cutoff {
+                self.order.insert((Reverse(st.est), Reverse(sq)), self.slots.len());
+                self.slots.push(st);
+                self.slot_seq.push(sq);
+            }
+        }
+    }
+
+    /// Take all chunks in storage order and empty the stack (declump rebuild).
+    pub fn drain_storage_order(&mut self) -> Vec<SearchState> {
+        self.order.clear();
+        self.slot_seq.clear();
+        std::mem::take(&mut self.slots)
     }
 }
 
@@ -152,15 +202,24 @@ pub fn getnextbest(
     let mut ess_scratch = vec![0i32; nseg * nseg];
 
     loop {
-        if pstack.is_empty() {
+        if pstack.aborted {
+            return (6, est, ali); // lskipflag
+        }
+        if pstack.top() <= 0 {
             return (1, -INFINIT, ali);
         }
-        let best = pstack.peek_best().unwrap();
-        if best.est < scorecutoff {
-            return (2, best.est, ali);
+        // Fortran tests flag 2 then flag 3; 3 overrides 2.
+        let chunk = pstack.chunk as i64;
+        let top = pstack.top();
+        let mut flag = 0;
+        if pstack.best_est().unwrap() < scorecutoff {
+            flag = 2;
         }
-        if pstack.size() > pstack.overflow_limit {
-            return (3, best.est, ali);
+        if top + 2 * chunk > MAXSTACK as i64 || top > MAXSTACK as i64 - 100 {
+            flag = 3;
+        }
+        if flag != 0 {
+            return (flag, est, ali);
         }
 
         let state = pstack.pop_best().unwrap();
@@ -179,7 +238,7 @@ pub fn getnextbest(
         }
 
         if nmin == 0 {
-            continue;  // skip, no candidates
+            return (4, est, ali);  // Fortran flag 4 'no candidates': ends the domain
         }
         if nmin == 1 && nmax == 1 {
             // Unique alignment
@@ -302,7 +361,7 @@ pub fn split(
     if n1 == 0 {
         mini = 0;
         maxi = 0;
-        bestxres = 0;
+        bestxres = ci[0 * nseg + xseg] as usize; // Fortran: bestxres=ci(1,xseg)
     } else {
         let mut mn = INFINIT;
         let mut mx = -INFINIT;
@@ -346,7 +405,7 @@ pub fn split(
     }
 
     // Push subgroups
-    if lseqtl && n1 > 0 {
+    if lseqtl {
         // Split better half into left/nul/right groups
         let mut ci3 = Vec::new();
         let mut ci4 = Vec::new();
@@ -391,8 +450,10 @@ fn getemax_update(
         } else if lclosed[jseg] && !lclosed[iseg] {
             return Some((e, iseg as i32, jseg as i32));
         } else if !lclosed[iseg] && !lclosed[jseg] {
-            // ran(seed) = 0.0878... < 0.5, so always picks jseg, iseg
-            return Some((e, jseg as i32, iseg as i32));
+            // `ran(seed)` is the gfortran RAN intrinsic (serialcompare does not
+            // link ran.f): it reseeds with seed=1234567 on every call and returns
+            // 0.662177 > 0.5, so Fortran takes xseg=iseg, yseg=jseg.
+            return Some((e, iseg as i32, jseg as i32));
         }
     }
     None
@@ -471,8 +532,7 @@ pub fn declump(
     trans: &[i32], lseqtl: bool,
 ) {
     let nseg = mi.len();
-    let old_states = std::mem::take(&mut pstack.states).into_vec();
-    let mut new_states: Vec<SearchState> = Vec::with_capacity(old_states.len());
+    let old_states = pstack.drain_storage_order();
 
     // Scratch buffers — allocated once, reused for each state
     let mut ni_tmp = vec![0i32; nseg];
@@ -482,7 +542,10 @@ pub fn declump(
         let est = state.est;
 
         if est > singletcutoff {
-            new_states.push(state);
+            // Fortran goto 20: re-put unchanged
+            if est > scorecutoff {
+                pstack.push(state);
+            }
             continue;
         }
 
@@ -506,9 +569,11 @@ pub fn declump(
             }
             if let Some(pos) = found {
                 if trans[m as usize * nseg + seg] != NUL {
-                    // Swap with last (order doesn't matter for scoring)
-                    let last = count - 1;
-                    ci_tmp[pos * nseg + seg] = ci_tmp[last * nseg + seg];
+                    // Shift down, keeping ci sorted: get_estimate's lseqtl test
+                    // reads ci(1) as the leftmost start and ci(ni) as nul.
+                    for k in pos + 1..count {
+                        ci_tmp[(k - 1) * nseg + seg] = ci_tmp[k * nseg + seg];
+                    }
                     ni_tmp[seg] -= 1;
                     lchange = true;
                 }
@@ -532,9 +597,7 @@ pub fn declump(
 
         if est_val > scorecutoff {
             let new_state = pstack.pack(est_val, &ni_tmp, &ci_tmp, nseg, ns, seglist);
-            new_states.push(new_state);
+            pstack.push(new_state);
         }
     }
-
-    pstack.states = BinaryHeap::from(new_states);
 }
