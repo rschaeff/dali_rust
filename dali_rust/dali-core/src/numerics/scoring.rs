@@ -1,4 +1,3 @@
-use super::rounding::nint;
 
 /// DP envelope radius constant.
 const ENVELOPE_RADIUS: f32 = 20.0;

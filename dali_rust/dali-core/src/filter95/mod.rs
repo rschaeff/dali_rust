@@ -17,10 +17,8 @@ use ndarray::Array2;
 
 use crate::types::{NodeType, Protein, ParsiHit, DistMatScale100};
 use crate::store::ProteinStore;
-use crate::numerics::rounding::nint;
-use crate::numerics::kabsch::{u3b, transrotate};
-use crate::numerics::nw::{filltable_maxsim, nw_maxsim};
-use crate::numerics::fitz::FitzResult;
+use crate::numerics::kabsch::transrotate_f32;
+use crate::numerics::fitz::{fitz, getut_f32};
 
 /// FILTER95 output entry.
 #[derive(Debug, Clone)]
@@ -84,109 +82,6 @@ fn compute_minscore(node_size: usize) -> (i32, i32) {
         crate::numerics::nint_f32(10000.0f32 * mean),
         crate::numerics::nint_f32(10000.0f32 * sigma),
     )
-}
-
-// ---------------------------------------------------------------------------
-// Superposition
-// ---------------------------------------------------------------------------
-
-/// Compute rotation/translation from alignment and apply to x.
-fn getut_and_transform(x: &mut Array2<f64>, y: &Array2<f64>, ali: &[i32]) {
-    let nx = x.ncols();
-    let pairs: Vec<(usize, usize)> = (0..nx)
-        .filter(|&i| ali[i] >= 0)
-        .map(|i| (i, ali[i] as usize))
-        .collect();
-    let lali = pairs.len();
-
-    if lali == 0 {
-        return;
-    }
-
-    let mut ux = Array2::zeros((3, lali));
-    let mut uy = Array2::zeros((3, lali));
-    let w = vec![1.0; lali];
-
-    for (k, &(i, j)) in pairs.iter().enumerate() {
-        for dim in 0..3 {
-            ux[[dim, k]] = x[[dim, i]];
-            uy[[dim, k]] = y[[dim, j]];
-        }
-    }
-
-    let result = u3b(&w, &ux, &uy, lali, 1);
-    transrotate(x, &result.u, &result.t);
-}
-
-/// Iterative superposition refinement with initial alignment.
-///
-/// Unlike numerics::fitz which starts with ali=all -1, this takes
-/// an initial alignment and checks convergence against it on the
-/// first iteration. Matches Fortran fitz() which takes ali as in-out.
-fn fitz95(
-    x: &mut Array2<f64>,
-    y: &Array2<f64>,
-    ali_init: &[i32],
-    rcut: f64,
-    maxiter: usize,
-) -> FitzResult {
-    let nx = x.ncols();
-    let ny = y.ncols();
-
-    if nx < 1 || ny < 1 {
-        return FitzResult {
-            ali: vec![-1; nx],
-            rms: 0.0,
-            lali: 0,
-            niter: 0,
-        };
-    }
-
-    let mut ali = ali_init.to_vec();
-    let mut rms = 0.0;
-    let mut lali = 0usize;
-    let mut niter = 0usize;
-    let mut frozen = false;
-
-    while niter < maxiter && !frozen {
-        niter += 1;
-
-        let table0 = filltable_maxsim(x, y, rcut);
-        let ali_old = ali.clone();
-        let (_score, new_ali) = nw_maxsim(nx, ny, &table0);
-        ali = new_ali;
-
-        frozen = ali == ali_old;
-
-        // Superpose
-        let pairs: Vec<(usize, usize)> = (0..nx)
-            .filter(|&i| ali[i] >= 0)
-            .map(|i| (i, ali[i] as usize))
-            .collect();
-        lali = pairs.len();
-
-        if lali > 0 {
-            let mut ux = Array2::zeros((3, lali));
-            let mut uy = Array2::zeros((3, lali));
-            let w = vec![1.0; lali];
-            for (k, &(i, j)) in pairs.iter().enumerate() {
-                for dim in 0..3 {
-                    ux[[dim, k]] = x[[dim, i]];
-                    uy[[dim, k]] = y[[dim, j]];
-                }
-            }
-            let result = u3b(&w, &ux, &uy, lali, 1);
-            rms = (result.rms / lali.max(1) as f64).sqrt();
-            transrotate(x, &result.u, &result.t);
-        }
-    }
-
-    FitzResult {
-        ali,
-        rms,
-        lali,
-        niter,
-    }
 }
 
 // ---------------------------------------------------------------------------
@@ -377,11 +272,11 @@ pub fn run_filter95(
         }
 
         // Build fresh xca from ca (always rebuilt)
-        let mut xca = Array2::<f64>::zeros((3, nx));
+        let mut xca = Array2::<f32>::zeros((3, nx));
         for k in 0..nx {
             let res_idx = resix[k] - 1; // 0-based for ca
             for dim in 0..3 {
-                xca[[dim, k]] = p1.ca[[dim, res_idx]];
+                xca[[dim, k]] = p1.ca[[dim, res_idx]] as f32;
             }
         }
 
@@ -421,11 +316,12 @@ pub fn run_filter95(
             }
         }
 
-        // getut + transrotate: initial superposition
-        getut_and_transform(&mut xca, &p2.ca, &fitzali);
-
-        // fitz95: iterative refinement with initial alignment
-        let fitz_result = fitz95(&mut xca, &p2.ca, &fitzali, fitzrcut, fitzmaxiter);
+        // getut + transrotate: initial superposition, then fitz (which
+        // starts from an empty alignment; PARSI's only steers the start)
+        let ca2_32 = p2.ca.mapv(|v| v as f32);
+        let (res, _, _) = getut_f32(&fitzali, &xca, &ca2_32);
+        transrotate_f32(&mut xca, &res.u, &res.t);
+        let fitz_result = fitz(&mut xca, &ca2_32, fitzrcut, fitzmaxiter);
 
         // Map back to full-protein alignment for scoring
         // tmpali: nres1-length, tmpali[i] > 0 means 1-based cd2 residue

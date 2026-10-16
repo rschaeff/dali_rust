@@ -1,9 +1,10 @@
 use ndarray::Array2;
 
-/// Build similarity score matrix for NW alignment.
+/// Build similarity score matrix for NW alignment (subfitzfast.f
+/// filltable_maxsim, REAL distance_real).
 ///
-/// score[i,j] = max(0, nint((rcut - dist(x[:,i], y[:,j])) * 10))
-pub fn filltable_maxsim(x: &Array2<f64>, y: &Array2<f64>, rcut: f64) -> Array2<i16> {
+/// score[i,j] = nint((rcut - dist(x[:,i], y[:,j])) * 10) if dist < rcut, else 0
+pub fn filltable_maxsim(x: &Array2<f32>, y: &Array2<f32>, rcut: f32) -> Array2<i16> {
     let nx = x.ncols();
     let ny = y.ncols();
     let mut table = Array2::zeros((nx, ny));
@@ -15,11 +16,7 @@ pub fn filltable_maxsim(x: &Array2<f64>, y: &Array2<f64>, rcut: f64) -> Array2<i
             let dz = x[[2, i]] - y[[2, j]];
             let r = (dx * dx + dy * dy + dz * dz).sqrt();
             if r < rcut {
-                // Use Rust's f64::round() which matches rint() for this usage
-                let s = ((rcut - r) * 10.0).round() as i16;
-                if s > 0 {
-                    table[[i, j]] = s;
-                }
+                table[[i, j]] = super::rounding::nint_f32((rcut - r) * 10.0f32) as i16;
             }
         }
     }

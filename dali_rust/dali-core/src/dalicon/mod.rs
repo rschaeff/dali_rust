@@ -11,8 +11,8 @@
 
 use ndarray::Array2;
 
-use crate::numerics::fitz::fitz;
-use crate::numerics::kabsch::{u3b, transrotate};
+use crate::numerics::fitz::{fitz, getut_f32};
+use crate::numerics::kabsch::transrotate_f32;
 use crate::numerics::rounding::nint;
 use crate::store::ProteinStore;
 use crate::types::{AlignmentBlock, DaliconDistMat};
@@ -23,7 +23,7 @@ use crate::types::{AlignmentBlock, DaliconDistMat};
 
 const REFITOL: f32 = 2000.0;
 const MAXITER: usize = 100;
-const FITZRCUT: f64 = 4.0;
+const FITZRCUT: f32 = 4.0;
 const FITZMAXITER: usize = 10;
 const BLOCKSIZE: usize = 4;
 const IMAX0: usize = 50;
@@ -1318,7 +1318,9 @@ fn convert_prealignment(
 pub struct DaliconCd1State {
     pub code: String,
     pub nres: usize,
-    pub ca: Array2<f64>,
+    /// REAL coordinates; like ca1 in dowork_dalicon they are transformed in
+    /// place by each fitz and carried over to the next cd2.
+    pub ca: Array2<f32>,
     pub dist: DaliconDistMat,
 }
 
@@ -1440,7 +1442,7 @@ pub fn dowork_dalicon(
         *cd1_state = Some(DaliconCd1State {
             code: cd1.to_string(),
             nres: prot1.nres,
-            ca: ca1,
+            ca: ca1.mapv(|v| v as f32),
             dist: d1,
         });
     }
@@ -1466,30 +1468,13 @@ pub fn dowork_dalicon(
             }
         }
 
-        // Initial superposition from prealignment (Python: getut + transrotate)
-        {
-            let pairs: Vec<(usize, usize)> = (0..nres1)
-                .filter(|&i| ali_0based[i] >= 0)
-                .map(|i| (i, ali_0based[i] as usize))
-                .collect();
-            let lali = pairs.len();
-            if lali > 0 {
-                let mut ux = Array2::zeros((3, lali));
-                let mut uy = Array2::zeros((3, lali));
-                let w = vec![1.0; lali];
-                for (k, &(i_idx, j_idx)) in pairs.iter().enumerate() {
-                    for dim in 0..3 {
-                        ux[[dim, k]] = cd1_s.ca[[dim, i_idx]];
-                        uy[[dim, k]] = ca2[[dim, j_idx]];
-                    }
-                }
-                let result = u3b(&w, &ux, &uy, lali, 1);
-                transrotate(&mut cd1_s.ca, &result.u, &result.t);
-            }
-        }
+        // Initial superposition from prealignment (getut + transrotate)
+        let ca2_32 = ca2.mapv(|v| v as f32);
+        let (res, _, _) = getut_f32(&ali_0based, &cd1_s.ca, &ca2_32);
+        transrotate_f32(&mut cd1_s.ca, &res.u, &res.t);
 
         // fitz modifies ca1 in-place (via transrotate)
-        let _fitz_result = fitz(&mut cd1_s.ca, ca2, FITZRCUT, FITZMAXITER);
+        let _fitz_result = fitz(&mut cd1_s.ca, &ca2_32, FITZRCUT, FITZMAXITER);
 
         // Overwrite preali1 if fitz result is longer
         let nali_fitz = _fitz_result.lali;

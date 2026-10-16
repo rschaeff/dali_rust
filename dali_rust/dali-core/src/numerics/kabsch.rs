@@ -148,6 +148,317 @@ pub fn u3b(w: &[f64], x: &Array2<f64>, y: &Array2<f64>, n: usize, mode: i32) -> 
     U3bResult { rms, u, t, ier }
 }
 
+/// Result of [`u3b_f32`]: REAL outputs of the Fortran routine.
+pub struct U3bF32 {
+    pub rms: f32,         // sum of weighted squared deviations
+    pub u: [[f32; 3]; 3], // u[i][j] = U(I,J)
+    pub t: [f32; 3],
+    pub ier: i32,
+}
+
+/// Kabsch's U3B exactly as DaliLite links it (u3b-8.f): REAL arguments,
+/// REAL*8 internals, eigenvalues from the characteristic cubic.
+///
+/// Mixed precision is reproduced where it matters: W(M)*X(I,M) in the
+/// centroid sums is a REAL product, U is rounded to REAL before T is formed
+/// from it, and SIGMA (the sign test for the third root) is REAL.
+/// x, y are (3, >=n); only the first n columns are used.
+pub fn u3b_f32(w: &[f32], x: &Array2<f32>, y: &Array2<f32>, n: usize, mode: i32) -> U3bF32 {
+    const TOL: f64 = 1.0e-2;
+    const SQRT3: f64 = 1.73205080756888e+00;
+    const IP: [usize; 9] = [1, 2, 4, 2, 3, 5, 4, 5, 6];
+    const IP2312: [usize; 4] = [2, 3, 1, 2];
+
+    let mut out = U3bF32 {
+        rms: 0.0,
+        u: [[1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0]],
+        t: [0.0; 3],
+        ier: -1,
+    };
+    let mut wc = 0.0f64;
+    let mut e0 = 0.0f64;
+    let mut xc = [0.0f64; 3];
+    let mut yc = [0.0f64; 3];
+    let mut a = [[0.0f64; 3]; 3];
+    let mut b = [[0.0f64; 3]; 3];
+    let mut r = [[0.0f64; 3]; 3];
+    for i in 0..3 {
+        a[i][i] = 1.0;
+    }
+    if n < 1 {
+        return out;
+    }
+    // centroids
+    out.ier = -2;
+    for m in 0..n {
+        if w[m] < 0.0 {
+            return out;
+        }
+        wc += w[m] as f64;
+        for i in 0..3 {
+            xc[i] += (w[m] * x[[i, m]]) as f64;
+            yc[i] += (w[m] * y[[i, m]]) as f64;
+        }
+    }
+    if wc <= 0.0 {
+        return out;
+    }
+    for i in 0..3 {
+        xc[i] /= wc;
+        yc[i] /= wc;
+    }
+    // correlation matrix R between Y and X
+    for m in 0..n {
+        let wm = w[m] as f64;
+        for i in 0..3 {
+            let dx = x[[i, m]] as f64 - xc[i];
+            let dy = y[[i, m]] as f64 - yc[i];
+            e0 += wm * (dx * dx + dy * dy);
+            let d = wm * dy;
+            for j in 0..3 {
+                r[i][j] += d * (x[[j, m]] as f64 - xc[j]);
+            }
+        }
+    }
+    let mut det = r[0][0] * (r[1][1] * r[2][2] - r[1][2] * r[2][1])
+        - r[0][1] * (r[1][0] * r[2][2] - r[1][2] * r[2][0])
+        + r[0][2] * (r[1][0] * r[2][1] - r[1][1] * r[2][0]);
+    let sigma = det as f32;
+    // upper triangle of transposed(R)*R: RR1..RR6 = (1,1),(1,2),(2,2),(1,3),(2,3),(3,3)
+    let mut rr = [0.0f64; 6];
+    let mut mm = 0;
+    for j in 0..3 {
+        for i in 0..=j {
+            rr[mm] = r[0][i] * r[0][j] + r[1][i] * r[1][j] + r[2][i] * r[2][j];
+            mm += 1;
+        }
+    }
+    let (rr1, rr2, rr3, rr4, rr5, rr6) = (rr[0], rr[1], rr[2], rr[3], rr[4], rr[5]);
+    // eigenvalues: characteristic cubic X**3-3*SPUR*X**2+3*COF*X-DET=0
+    let spur = (rr1 + rr3 + rr6) / 3.0;
+    let cof = (rr3 * rr6 - rr5 * rr5 + rr1 * rr6 - rr4 * rr4 + rr1 * rr3 - rr2 * rr2) / 3.0;
+    det = det * det;
+    let mut e = [spur; 3];
+
+    // Control flow follows the Fortran labels: 10 eigenvectors, 30 rotation,
+    // 40 translation, 50 rms.
+    enum Go {
+        L10,
+        L30,
+        L40,
+        L50,
+    }
+    let mut go = if spur <= 0.0 {
+        Go::L40
+    } else {
+        let d = spur * spur;
+        let h = d - cof;
+        let g = (spur * cof - det) / 2.0 - spur * h;
+        if h <= 0.0 {
+            if mode == 0 { Go::L50 } else { Go::L30 }
+        } else {
+            let sqrth = h.sqrt();
+            let mut d = h * h * h - g * g;
+            if d < 0.0 {
+                d = 0.0;
+            }
+            let d = d.sqrt().atan2(-g) / 3.0;
+            let cth = sqrth * d.cos();
+            let sth = sqrth * SQRT3 * d.sin();
+            e[0] = spur + cth + cth;
+            e[1] = spur - cth + sth;
+            e[2] = spur - cth - sth;
+            if mode == 0 { Go::L50 } else { Go::L10 }
+        }
+    };
+
+    if let Go::L10 = go {
+        go = Go::L30;
+        let mut ss = [0.0f64; 6];
+        for l in [0usize, 2] {
+            let d = e[l];
+            ss[0] = (d - rr3) * (d - rr6) - rr5 * rr5;
+            ss[1] = (d - rr6) * rr2 + rr4 * rr5;
+            ss[2] = (d - rr1) * (d - rr6) - rr4 * rr4;
+            ss[3] = (d - rr3) * rr4 + rr2 * rr5;
+            ss[4] = (d - rr1) * rr5 + rr2 * rr4;
+            ss[5] = (d - rr1) * (d - rr3) - rr2 * rr2;
+            let j = if ss[0].abs() >= ss[2].abs() {
+                if ss[0].abs() < ss[5].abs() { 3 } else { 1 }
+            } else if ss[2].abs() >= ss[5].abs() {
+                2
+            } else {
+                3
+            };
+            let mut d = 0.0f64;
+            let j = 3 * (j - 1);
+            for i in 0..3 {
+                let k = IP[i + j] - 1;
+                a[i][l] = ss[k];
+                d += ss[k] * ss[k];
+            }
+            if d > 0.0 {
+                d = 1.0 / d.sqrt();
+            }
+            for i in 0..3 {
+                a[i][l] *= d;
+            }
+        }
+        let d = a[0][0] * a[0][2] + a[1][0] * a[1][2] + a[2][0] * a[2][2];
+        let (m1, m) = if (e[0] - e[1]) > (e[1] - e[2]) { (2, 0) } else { (0, 2) };
+        let mut p = 0.0f64;
+        for i in 0..3 {
+            a[i][m1] -= d * a[i][m];
+            p += a[i][m1] * a[i][m1];
+        }
+        let mut ok = true;
+        if p > TOL {
+            p = 1.0 / p.sqrt();
+            for i in 0..3 {
+                a[i][m1] *= p;
+            }
+        } else {
+            let mut p = 1.0f64;
+            let mut j = 0usize;
+            for i in 0..3 {
+                if p < a[i][m].abs() {
+                    continue;
+                }
+                p = a[i][m].abs();
+                j = i;
+            }
+            let k = IP2312[j] - 1;
+            let l = IP2312[j + 1] - 1;
+            let p = (a[k][m] * a[k][m] + a[l][m] * a[l][m]).sqrt();
+            if p <= TOL {
+                ok = false;
+                go = Go::L40;
+            } else {
+                a[j][m1] = 0.0;
+                a[k][m1] = -a[l][m] / p;
+                a[l][m1] = a[k][m] / p;
+            }
+        }
+        if ok {
+            a[0][1] = a[1][2] * a[2][0] - a[1][0] * a[2][2];
+            a[1][1] = a[2][2] * a[0][0] - a[2][0] * a[0][2];
+            a[2][1] = a[0][2] * a[1][0] - a[0][0] * a[1][2];
+        }
+    }
+
+    if let Go::L30 = go {
+        go = Go::L40;
+        for l in 0..2 {
+            let mut d = 0.0f64;
+            for i in 0..3 {
+                b[i][l] = r[i][0] * a[0][l] + r[i][1] * a[1][l] + r[i][2] * a[2][l];
+                d += b[i][l] * b[i][l];
+            }
+            if d > 0.0 {
+                d = 1.0 / d.sqrt();
+            }
+            for i in 0..3 {
+                b[i][l] *= d;
+            }
+        }
+        let d = b[0][0] * b[0][1] + b[1][0] * b[1][1] + b[2][0] * b[2][1];
+        let mut p = 0.0f64;
+        for i in 0..3 {
+            b[i][1] -= d * b[i][0];
+            p += b[i][1] * b[i][1];
+        }
+        let mut ok = true;
+        if p > TOL {
+            p = 1.0 / p.sqrt();
+            for i in 0..3 {
+                b[i][1] *= p;
+            }
+        } else {
+            let mut p = 1.0f64;
+            let mut j = 0usize;
+            for i in 0..3 {
+                if p < b[i][0].abs() {
+                    continue;
+                }
+                p = b[i][0].abs();
+                j = i;
+            }
+            let k = IP2312[j] - 1;
+            let l = IP2312[j + 1] - 1;
+            let p = (b[k][0] * b[k][0] + b[l][0] * b[l][0]).sqrt();
+            if p <= TOL {
+                ok = false;
+            } else {
+                b[j][1] = 0.0;
+                b[k][1] = -b[l][0] / p;
+                b[l][1] = b[k][0] / p;
+            }
+        }
+        if ok {
+            b[0][2] = b[1][0] * b[2][1] - b[1][1] * b[2][0];
+            b[1][2] = b[2][0] * b[0][1] - b[2][1] * b[0][0];
+            b[2][2] = b[0][0] * b[1][1] - b[0][1] * b[1][0];
+            for i in 0..3 {
+                for j in 0..3 {
+                    out.u[i][j] =
+                        (b[i][0] * a[j][0] + b[i][1] * a[j][1] + b[i][2] * a[j][2]) as f32;
+                }
+            }
+        }
+    }
+
+    if let Go::L40 = go {
+        for i in 0..3 {
+            out.t[i] = (yc[i]
+                - out.u[i][0] as f64 * xc[0]
+                - out.u[i][1] as f64 * xc[1]
+                - out.u[i][2] as f64 * xc[2]) as f32;
+        }
+    }
+
+    // 50: rms error
+    for i in 0..3 {
+        if e[i] < 0.0 {
+            e[i] = 0.0;
+        }
+        e[i] = e[i].sqrt();
+    }
+    out.ier = 0;
+    if e[1] <= e[0] * 1.0e-05 {
+        out.ier = -1;
+    }
+    let mut d = e[2];
+    if sigma < 0.0 {
+        d = -d;
+        if (e[1] - e[2]) <= e[0] * 1.0e-05 {
+            out.ier = -1;
+        }
+    }
+    d = d + e[1] + e[0];
+    out.rms = (e0 - d - d) as f32;
+    if out.rms < 0.0 {
+        out.rms = 0.0;
+    }
+    out
+}
+
+/// subfitzfast.f transrotate: x <- U x + T in REAL, accumulated as
+/// tmp = t; tmp += u(j,k)*x(k) for k = 1..3.
+pub fn transrotate_f32(x: &mut Array2<f32>, u: &[[f32; 3]; 3], t: &[f32; 3]) {
+    for i in 0..x.ncols() {
+        let mut tmp = [0.0f32; 3];
+        for j in 0..3 {
+            tmp[j] = t[j];
+            for k in 0..3 {
+                tmp[j] += u[j][k] * x[[k, i]];
+            }
+        }
+        for j in 0..3 {
+            x[[j, i]] = tmp[j];
+        }
+    }
+}
+
 /// Apply rotation and translation in-place: x = U @ x + T
 pub fn transrotate(x: &mut Array2<f64>, u: &Array2<f64>, t: &Array1<f64>) {
     let n = x.ncols();
