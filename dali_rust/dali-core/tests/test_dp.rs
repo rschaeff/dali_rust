@@ -146,7 +146,6 @@ fn parse_wolfitz_as_alignments(path: &str) -> Vec<(String, String, Vec<Alignment
 fn validate_dp(
     gt: &[DccpRef],
     results: &[dali_core::DccpEntry],
-    score_tol: f64,
 ) -> (usize, usize, Vec<String>) {
     let mut matched = 0;
     let mut mismatched = Vec::new();
@@ -163,7 +162,8 @@ fn validate_dp(
             Some(result) => {
                 let mut issues = Vec::new();
 
-                if (entry.score - result.score).abs() > score_tol {
+                // DCCP prints the score as f8.1; require that printed value
+                if format!("{:.1}", entry.score) != format!("{:.1}", result.score) {
                     issues.push(format!(
                         "score: ref={:.1} got={:.1}",
                         entry.score, result.score
@@ -218,7 +218,7 @@ fn test_dp_5_structures() {
     let store = ProteinStore::new(FIXTURE_DIR);
     let results = run_dp(&alignments, &store, ZCUT_DEFAULT);
 
-    let (matched, total, mismatched) = validate_dp(&gt, &results, 1.0);
+    let (matched, total, mismatched) = validate_dp(&gt, &results);
 
     eprintln!("DP 5-struct: {}/{} matched", matched, total);
     if !mismatched.is_empty() {
@@ -239,7 +239,7 @@ fn test_dp_18_structures() {
     let store = ProteinStore::new(EXPANDED_DIR);
     let results = run_dp(&alignments, &store, ZCUT_DEFAULT);
 
-    let (matched, total, mismatched) = validate_dp(&gt, &results, 2.0);
+    let (matched, total, mismatched) = validate_dp(&gt, &results);
 
     eprintln!("DP 18-struct: {}/{} matched", matched, total);
     if !mismatched.is_empty() {

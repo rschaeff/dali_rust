@@ -40,8 +40,8 @@ pub fn dopair(
     d2: &Array2<i16>,
     doms1: &[&DomainNode],
     doms2: &[&DomainNode],
-    wght: &[f64; 101],
-) -> (f64, f64) {
+    wght: &[f32; 101],
+) -> (f32, f32) {
     // Mark active residues in each domain (1-based indexing)
     let mut lactive1 = vec![false; nres1 + 1];
     let mut lactive2 = vec![false; nres2 + 1];
@@ -136,8 +136,8 @@ pub fn run_dp(
         }
 
         // Score all domain pairs
-        let mut zmax = 0.0f64;
-        let mut x1 = 0.0f64;
+        let mut zmax = 0.0f32;
+        let mut x1 = 0.0f32;
 
         for idom1 in 0..doms1.len() {
             for idom2 in 0..doms2.len() {
@@ -158,13 +158,13 @@ pub fn run_dp(
         }
 
         // Output if any domain pair passed z cutoff
-        if zmax >= zcut {
+        if zmax >= zcut as f32 {
             let rmsd = calc_rmsd(&prot1.ca, &prot2.ca, blocks);
             results.push(DccpEntry {
                 cd1: cd1.clone(),
                 cd2: cd2.clone(),
-                score: x1,
-                zscore: zmax,
+                score: x1 as f64,
+                zscore: zmax as f64,
                 rmsd,
                 blocks: blocks.clone(),
             });

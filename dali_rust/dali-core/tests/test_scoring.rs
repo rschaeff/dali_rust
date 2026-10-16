@@ -4,7 +4,7 @@ use dali_core::numerics::scoring::{dpweights, dpscorefun, zscore_func};
 fn test_dpscorefun_values() {
     let w = dpweights();
 
-    // Reference values from Python
+    // Reference values from the (double-precision) Python port; DP is REAL
     let cases: Vec<(i16, i16, f64)> = vec![
         (38, 38, 0.1921578878),
         (50, 100, -0.3976671015),
@@ -14,9 +14,9 @@ fn test_dpscorefun_values() {
     ];
 
     for (a, b, expected) in cases {
-        let result = dpscorefun(a, b, &w);
+        let result = dpscorefun(a, b, &w) as f64;
         assert!(
-            (result - expected).abs() < 1e-8,
+            (result - expected).abs() < 1e-6,
             "dpscorefun({}, {}) = {}, expected {}",
             a, b, result, expected
         );
@@ -32,9 +32,9 @@ fn test_zscore_values() {
     ];
 
     for (l1, l2, score, expected) in cases {
-        let result = zscore_func(l1, l2, score);
+        let result = zscore_func(l1, l2, score as f32) as f64;
         assert!(
-            (result - expected).abs() < 1e-8,
+            (result - expected).abs() < 1e-5,
             "zscore({}, {}, {}) = {}, expected {}",
             l1, l2, score, result, expected
         );

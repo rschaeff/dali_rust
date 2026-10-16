@@ -1,53 +1,48 @@
 use super::rounding::nint;
 
 /// DP envelope radius constant.
-const ENVELOPE_RADIUS: f64 = 20.0;
+const ENVELOPE_RADIUS: f32 = 20.0;
 
 /// DP distance-difference threshold.
-const D0: f64 = 0.20;
+const D0: f32 = 0.20;
+
+// The DP functions below are in REAL (f32), as in comparemodules.f; the
+// printed DCCP score (f8.1) is sensitive to double-precision accumulation.
 
 /// Compute Gaussian envelope weights for DP scoring.
 ///
 /// wght[i] = exp(-(i/radius)^2) for i=0..100
-pub fn dpweights() -> [f64; 101] {
-    let mut wght = [0.0f64; 101];
-    let x = 1.0 / (ENVELOPE_RADIUS * ENVELOPE_RADIUS);
+pub fn dpweights() -> [f32; 101] {
+    let mut wght = [0.0f32; 101];
+    let x = 1.0f32 / (ENVELOPE_RADIUS * ENVELOPE_RADIUS);
     for i in 0..101 {
-        let fi = i as f64;
-        wght[i] = (-x * fi * fi).exp();
+        let fi = i as f32;
+        wght[i] = (-(x * fi * fi)).exp();
     }
     wght
 }
 
 /// Distance-based scoring function for DP.
 ///
-/// Translated from comparemodules.f dpscorefun().
+/// Translated from comparemodules.f dpscorefun(); a-b and a+b are integer*2.
 ///
 /// # Arguments
 /// * `a`, `b` - int16 distances (dist * 10)
 /// * `wght` - weight array from dpweights()
-pub fn dpscorefun(a: i16, b: i16, wght: &[f64; 101]) -> f64 {
-    let ai = a as i32;
-    let bi = b as i32;
-    let x = (ai - bi).unsigned_abs() as f64 / 10.0;
-    let y = (ai + bi) as f64 / 20.0;
+pub fn dpscorefun(a: i16, b: i16, wght: &[f32; 101]) -> f32 {
+    let x = a.wrapping_sub(b).wrapping_abs() as f32 / 10.0f32;
+    let y = a.wrapping_add(b) as f32 / 20.0f32;
 
-    if y > 100.0 {
+    if y > 100.0f32 {
         return 0.0;
     }
 
-    let mut iy = nint(y);
-    if iy < 0 {
-        iy = 0;
-    }
-    if iy > 100 {
-        iy = 100;
-    }
+    let iy = super::rounding::nint_f32(y).clamp(0, 100) as usize;
 
-    if y > 0.0 {
-        wght[iy as usize] * (D0 - x / y)
+    if y > 0.0f32 {
+        wght[iy] * (D0 - x / y)
     } else {
-        wght[iy as usize] * D0
+        wght[iy] * D0
     }
 }
 
@@ -55,15 +50,15 @@ pub fn dpscorefun(a: i16, b: i16, wght: &[f64; 101]) -> f64 {
 ///
 /// Uses cubic polynomial calibration.
 /// Translated from comparemodules.f zscore().
-pub fn zscore_func(l1: usize, l2: usize, score: f64) -> f64 {
-    let n12 = ((l1 * l2) as f64).sqrt();
-    let x = n12.min(400.0);
-    let mut mean = 7.9494 + 0.70852 * x + 2.5895e-4 * x * x - 1.9156e-6 * x * x * x;
-    if n12 > 400.0 {
-        mean += (n12 - 400.0) * 1.0;
+pub fn zscore_func(l1: usize, l2: usize, score: f32) -> f32 {
+    let n12 = ((l1 * l2) as i32 as f32).sqrt();
+    let x = n12.min(400.0f32);
+    let mut mean = 7.9494f32 + 0.70852f32 * x + 2.5895e-4f32 * x * x - 1.9156e-6f32 * x * x * x;
+    if n12 > 400.0f32 {
+        mean += (n12 - 400.0f32) * 1.0f32;
     }
-    let sigma = 0.50 * mean;
-    (score - mean) / sigma.max(1.0)
+    let sigma = 0.50f32 * mean;
+    (score - mean) / sigma.max(1.0f32)
 }
 
 /// Compute total alignment score.
@@ -83,12 +78,12 @@ pub fn totscore(
     nres1: usize,
     d1: &ndarray::Array2<i16>,
     d2: &ndarray::Array2<i16>,
-    wght: &[f64; 101],
-) -> f64 {
+    wght: &[f32; 101],
+) -> f32 {
     // Collect aligned residue indices (0-based)
     let aligned: Vec<usize> = (0..nres1).filter(|&i| ali1[i] != 0).collect();
 
-    let mut tots = 0.0;
+    let mut tots = 0.0f32;
     for &k in &aligned {
         for &l in &aligned {
             let q = (ali1[k].unsigned_abs() - 1) as usize; // 1-based target to 0-based
@@ -147,11 +142,11 @@ mod tests {
     #[test]
     fn test_dpweights() {
         let w = dpweights();
-        assert!((w[0] - 1.0).abs() < 1e-15);
+        assert!((w[0] - 1.0).abs() < 1e-7);
         assert!(w[100] > 0.0);
         assert!(w[100] < w[0]);
         // w[20] = exp(-1) = 0.367879...
-        assert!((w[20] - (-1.0f64).exp()).abs() < 1e-10);
+        assert!((w[20] - (-1.0f32).exp()).abs() < 1e-6);
     }
 
     #[test]
@@ -178,7 +173,7 @@ mod tests {
     #[test]
     fn test_gagaweights() {
         let w = gagaweights();
-        assert!((w[0] - 1.0).abs() < 1e-15);
+        assert!((w[0] - 1.0).abs() < 1e-7);
         // w[10] = exp(-(10/10)^2) = exp(-1)
         assert!((w[10] - (-1.0f64).exp()).abs() < 1e-10);
     }

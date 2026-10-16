@@ -95,36 +95,57 @@ pub fn dccp_to_dalicon_record(entry: &DccpEntry) -> DaliconRecord {
 /// Convert Filter95Entry list to DaliconRecords via pipe96 filtering.
 ///
 /// Matches: `sort -nr | uniq | pipe96-free.pl zcut nbest`
-/// - Sort by zscore descending
-/// - Keep top `nbest` per (cd1+cd2) key
-/// - Filter by z-score cutoff
+/// - Sort by zscore descending (ties: the rest of the line, also descending)
+/// - `uniq` drops repeated identical lines
+/// - Keep top `nbest` per (cd1+cd2) key, with zscore >= zcut
+/// - pipe96 strips every `-99` token textually; the remaining tokens are
+///   split in half between cd1 and cd2 ranges, nblock = count/4
 pub fn filter95_to_dalicon_records(
     entries: &[Filter95Entry],
     zcut: f64,
     nbest: usize,
 ) -> Vec<DaliconRecord> {
     let mut sorted: Vec<&Filter95Entry> = entries.iter().collect();
-    sorted.sort_by(|a, b| b.zscore.partial_cmp(&a.zscore).unwrap_or(std::cmp::Ordering::Equal));
+    sorted.sort_by(|a, b| {
+        b.zscore
+            .partial_cmp(&a.zscore)
+            .unwrap_or(std::cmp::Ordering::Equal)
+            .then_with(|| (&b.cd1, &b.cd2).cmp(&(&a.cd1, &a.cd2)))
+            .then_with(|| b.idom.cmp(&a.idom))
+            .then_with(|| b.score.cmp(&a.score))
+            .then_with(|| b.nseg.cmp(&a.nseg))
+            .then_with(|| b.ranges.cmp(&a.ranges))
+    });
+    sorted.dedup_by(|b, a| {
+        a.zscore == b.zscore
+            && a.cd1 == b.cd1
+            && a.cd2 == b.cd2
+            && a.idom == b.idom
+            && a.score == b.score
+            && a.nseg == b.nseg
+            && a.ranges == b.ranges
+    });
 
     let mut key_counts: HashMap<String, usize> = HashMap::new();
     let mut records = Vec::new();
 
     for e in sorted {
-        if e.zscore < zcut {
-            continue;
-        }
         let key = format!("{}{}", e.cd1, e.cd2);
         let count = key_counts.entry(key).or_insert(0);
         *count += 1;
-        if *count > nbest {
+        if *count > nbest || e.zscore < zcut {
             continue;
         }
 
+        let kept: Vec<i32> = e.ranges.iter().copied().filter(|&v| v != -99).collect();
+        let n = kept.len() / 4;
+        let mut values = kept[..2 * n].to_vec();
+        values.extend_from_slice(&kept[2 * n..4 * n]);
         records.push(DaliconRecord {
             cd1: e.cd1.clone(),
             cd2: e.cd2.clone(),
-            nblock: e.nseg,
-            values: e.ranges.clone(),
+            nblock: n,
+            values,
         });
     }
 
