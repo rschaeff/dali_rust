@@ -73,8 +73,12 @@ pub fn nw_maxsim(m: usize, n: usize, table0: &Array2<i16>) -> (i32, Vec<i32>) {
         let k0 = if y0 > n { y0 - n } else { 0 };
         let k1 = (m - 1).min(y0 - 1);
 
-        if k0 == k1 {
-            // Single cell on this anti-diagonal — check all available options
+        // A single-cell anti-diagonal (k0 == k1) is NOT special in Fortran:
+        // the x==1 edge assignment (trace 2) is overwritten by the y==1 edge
+        // assignment (trace 1). At the (m,n) corner this means the last
+        // residue of x is never aligned. Only m == 1 (k1 == 0, where Fortran
+        // reads shift(diag1,-1) out of bounds) keeps the old evaluation.
+        if k0 == k1 && k1 == 0 {
             let x = 1 + k0;
             let y = y0 - k0;
             if x <= m && y >= 1 && y <= n {
@@ -204,17 +208,16 @@ mod tests {
     #[test]
     fn test_nw_maxsim_identity() {
         // 3x3 identity-like table: diagonal = 40, off-diagonal = 0.
-        // Fortran/Python behavior: trace[1,1]=0, so cell (1,1) is never aligned
-        // during backtracking. Only cells (2,2) and (3,3) get aligned.
+        // subfitzfast.f (compiled with gfortran -O3) gives score 40, ali 0 2 0:
+        // trace(1,1)=0 stops the backtrack, and the (m,n) corner's trace is
+        // overwritten to 1 by the y==1/x==m edge rule, so only (2,2) aligns.
         let table = array![
             [40i16, 0,  0],
             [0,    40,  0],
             [0,     0, 40],
         ];
         let (score, ali) = nw_maxsim(3, 3, &table);
-        assert_eq!(ali[0], -1); // cell (1,1) not aligned (Fortran behavior)
-        assert_eq!(ali[1], 1);
-        assert_eq!(ali[2], 2);
-        assert_eq!(score, 80);
+        assert_eq!(ali, vec![-1, 1, -1]);
+        assert_eq!(score, 40);
     }
 }
