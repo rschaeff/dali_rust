@@ -41,7 +41,12 @@ pub const INFINIT: i32 = 10_000_000;
 pub const NUL: i32 = -99;
 pub const BOXDIM: usize = 501;
 pub const BL: usize = 10;
-pub const STARTSIZE: usize = 3;
+/// setldom threshold. comparemodules.f declares `integer startsize` and never
+/// assigns it; in the DaliLite binary it is 0 (checked by printing it from an
+/// instrumented build), so every node of the domain tree is aligned and parents
+/// search only their children's saved placements. 3 looked intended but is not
+/// what DaliLite does.
+pub const STARTSIZE: usize = 0;
 pub const LENE: usize = 6;
 pub const LENH: usize = 8;
 
