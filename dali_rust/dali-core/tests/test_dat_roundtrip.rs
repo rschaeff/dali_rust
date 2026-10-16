@@ -226,3 +226,49 @@ fn test_parsi_read_error_is_reported() {
     assert!(parsireadproteindata(dir.join("missing.dat").to_str().unwrap()).is_err());
     let _ = fs::remove_dir_all(&dir);
 }
+
+/// Fortran singletex treats a segment longer than 100 residues as fatal (its score
+/// table is 100x100): lskipflag is set and PARSI abandons the rest of the pair,
+/// keeping hits already written. AlphaFold models often have such helices. The port
+/// used to return silently and keep searching with no end-trimming for that segment,
+/// emitting alignments past the end of cd2 that crashed FILTER95.
+#[test]
+fn test_parsi_long_segment_aborts_like_fortran() {
+    use dali_core::parsi::run_parsi;
+    use dali_core::{Segment, SseType};
+
+    let dir = scratch("longseg");
+    let mut p = read_dat(format!("{}/1a87A.dat", DAT_DIR_5)).unwrap();
+    // Replace everything up to residue 110 with one 110-residue helix.
+    let mut segs = vec![Segment {
+        start: 1, end: 110, sse_type: SseType::Helix, check_start: 1, check_end: 110, checkx: 0,
+    }];
+    segs.extend(p.segments.iter().filter(|s| s.start > 110).cloned());
+    p.secstr = segs.iter().map(|s| s.sse_type).collect();
+    p.na = p.secstr.iter().filter(|&&s| s == SseType::Helix).count();
+    p.nb = p.secstr.len() - p.na;
+    p.nseg = segs.len();
+    p.segments = segs;
+    p.code = "longseg".into();
+    write_dat(&p, dir.join("longseg.dat")).unwrap();
+    fs::copy(format!("{}/101mA.dat", DAT_DIR_5), dir.join("101mA.dat")).unwrap();
+
+    let tree = derive_sse_tree(p.nres, &p.segments, &p.domain_tree);
+    let hits = run_parsi(&["longseg".to_string(), "101mA".to_string()], dir.to_str().unwrap(), None);
+    let mut n = 0;
+    for h in hits.iter().filter(|h| h.cd1 == "longseg" && h.cd2 == "101mA") {
+        n += 1;
+        assert!(h.idom > tree.len() || !tree[h.idom - 1].sses.contains(&1),
+                "idom {} contains the 110-residue segment", h.idom);
+        for (a, b) in h.ranges_cd1.iter().zip(&h.ranges_cd2) {
+            if a.0 > 0 {
+                assert!(a.1 as usize <= p.nres && b.0 >= 1 && b.1 <= 154, "{:?} -> {:?}", a, b);
+            }
+        }
+    }
+    // the full pipeline must not panic on it either
+    let store = ProteinStore::new(&dir);
+    let _ = run_parsi_path("longseg", &["101mA"], &store);
+    eprintln!("longseg -> 101mA: {} PARSI hits from domains without the long segment", n);
+    let _ = fs::remove_dir_all(&dir);
+}

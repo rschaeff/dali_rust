@@ -289,12 +289,14 @@ pub fn singletex(
     s_end: &mut [i16], s_end_stride: usize,
     dist1sum: &[i32], dist1sum_stride: usize,
     minlen: i32, scoretable: &[i32],
-) {
+) -> bool {
     let iwhere = start[iseg * start_stride + iseg];
-    if iwhere < 0 { return; }
+    if iwhere < 0 { return true; }
 
     let seglen = a2 - a1 + 1;
-    if seglen > 100 { return; }
+    // Fortran: 'FATAL ERROR -- seglen overflow', lskipflag=.true. -- the caller
+    // abandons the rest of this protein pair (table() is 100x100).
+    if seglen > 100 { return false; }
 
     let dist2_ptr = dist2.as_ptr();
     let dist_ptr = dist.as_ptr();
@@ -383,6 +385,7 @@ pub fn singletex(
             if idx < ex.len() { ex[idx] = x; }
         }
     }
+    true
 }
 
 /// Compute segment-segment doublet score.
@@ -430,7 +433,9 @@ pub fn segsegscore(
 
         let jfirst = transjres + jshift as i32 + jbeg;
         let jlast = transjres + jshift as i32 - jend + b2 - b1;
-        if jlast > nres2 as i32 { break; }
+        // Fortran `goto 29` lands on the loop's END DO, i.e. CYCLE. jend varies with
+        // jshift, so jlast is not monotone and a later shift can still fit.
+        if jlast > nres2 as i32 { continue; }
 
         for ishift in 0..bl {
             if lself && jshift != ishift { continue; }
@@ -570,13 +575,13 @@ pub fn update_ex(
     s_end: &mut [i16], s_end_stride: usize,
     dist1sum: &[i32], dist1sum_stride: usize,
     minseglen: &[i32], scoretable: &[i32],
-) {
+) -> bool {
     let ns = domns[idom] as usize;
     for is_ in 0..ns {
         let iseg = (domseglist[is_ * alloc + idom] - 1) as usize;
         if !lexdone[iseg * nseg + iseg] {
             setstart1(iseg, iseg, nix, laststart, ixstart, mi, start, nseg, lexdone);
-            singletex(
+            if !singletex(
                 iseg, upper[iseg * nseg + iseg], lower[iseg * nseg + iseg],
                 segmentrange[iseg * 2], segmentrange[iseg * 2 + 1],
                 mi[iseg] as usize, trans, trans_stride,
@@ -585,7 +590,9 @@ pub fn update_ex(
                 s_beg, s_beg_stride, s_end, s_end_stride,
                 dist1sum, dist1sum_stride,
                 minseglen[iseg], scoretable,
-            );
+            ) {
+                return false; // lskipflag
+            }
         }
 
         for js in 0..is_ {
@@ -609,6 +616,7 @@ pub fn update_ex(
             }
         }
     }
+    true
 }
 
 fn setstart1(

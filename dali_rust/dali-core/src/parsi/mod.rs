@@ -163,7 +163,9 @@ pub fn dowork_parsi(
         }
     };
 
-    if p2.nres == 0 {
+    // Fortran getsequence: nres2 > maxres2 is fatal for the pair (and the
+    // candidate arrays here are sized for MAXRES2 / BL starts).
+    if p2.nres == 0 || p2.nres > MAXRES2 {
         return output_hits;
     }
     if cache.prot.na * p2.na + cache.prot.nb * p2.nb == 0 {

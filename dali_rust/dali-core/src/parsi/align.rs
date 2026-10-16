@@ -102,8 +102,10 @@ pub fn align(
                      domns, domseglist, alloc, &mut start, nseg);
         }
 
-        // update_ex: compute scores for new segment pairs
-        update_ex(
+        // update_ex: compute scores for new segment pairs. On a fatal condition
+        // (segment > 100 residues) Fortran sets lskipflag and align returns: the
+        // rest of this pair is skipped, hits already written are kept.
+        if !update_ex(
             &mi_w, &trans_w, nseg,
             upper, lower, nseg, segmentrange,
             idom, domns, domseglist, alloc,
@@ -113,7 +115,9 @@ pub fn align(
             BL, &mut start, &mut lexdone, lseqtl,
             &mut s_beg, s_beg_stride, &mut s_end, s_end_stride,
             dist1sum, dist1sum_stride, minseglen, scoretable,
-        );
+        ) {
+            return;
+        }
 
         // Get initial estimate
         let (ess_init, est_init) = get_ess(ns, &seglist, &mi_w, &ci0_w, nseg,
@@ -913,8 +917,9 @@ fn perresiduescore(
         }
     }
 
-    // Compute scores with bl=1 (single residue resolution)
-    update_ex(
+    // Compute scores with bl=1 (single residue resolution). Cannot hit the
+    // seglen > 100 abort: align's update_ex for this domain already passed.
+    let _ok = update_ex(
         &mi_local, &trans_l, nseg,
         upper, lower, nseg, segmentrange,
         idom, domns, domseglist, alloc,

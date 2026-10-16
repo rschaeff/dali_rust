@@ -401,9 +401,12 @@ pub fn run_filter95(
             if cd1_start > 0 {
                 for j in cd1_start..=cd1_end {
                     if let Some(&l) = xiser.get(&(j as usize)) {
-                        if l > 0 && l <= nx {
+                        let k = cd2_start + j - cd1_start - 1;
+                        // Out-of-range k cannot come from a valid PARSI hit; ignore it
+                        // rather than index past cd2 (Fortran would read garbage).
+                        if l > 0 && l <= nx && k >= 0 && (k as usize) < p2.nres {
                             // 0-based domain-local index -> 0-based cd2 residue
-                            fitzali[l - 1] = cd2_start + j - cd1_start - 1;
+                            fitzali[l - 1] = k;
                         }
                     }
                 }
