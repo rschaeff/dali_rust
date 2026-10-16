@@ -328,9 +328,19 @@ fn align_pdb(
     let store = ProteinStore::new(&tmp_dir);
     let results = pipeline::compare_pair(&query.code, &template.code, &store);
 
-    // Filter to query→template direction only (blocks l1/r1 refer to query)
-    let q_results: Vec<&DccpEntry> = results.iter()
-        .filter(|r| r.cd1 == query.code && r.cd2 == template.code)
+    // compare_pair runs both directions, as dali.pl pairwise does. Bring the
+    // template→query hits into query orientation (blocks l1/r1 = query) rather
+    // than dropping them.
+    let q_results: Vec<DccpEntry> = results.iter()
+        .filter_map(|r| {
+            if r.cd1 == query.code && r.cd2 == template.code {
+                Some(r.clone())
+            } else if r.cd1 == template.code && r.cd2 == query.code {
+                Some(pipeline::swap_orientation(r))
+            } else {
+                None
+            }
+        })
         .collect();
 
     if q_results.is_empty() {
@@ -467,25 +477,31 @@ fn py_mask_protein(protein: &PyProtein, keep_indices: Vec<usize>, new_code: &str
 }
 
 /// One-to-many structural search with query-side amortization.
+///
+/// bothways=True (default) also aligns each target as cd1 against the query and
+/// reports those hits in query orientation, as dali.pl pairwise mode does.
 #[pyfunction]
-#[pyo3(signature = (query, targets, store, z_cut=2.0, skip_wolf=false))]
+#[pyo3(signature = (query, targets, store, z_cut=2.0, skip_wolf=false, bothways=true))]
 fn search_database(
     query: &str,
     targets: Vec<String>,
     store: &PyProteinStore,
     z_cut: f64,
     skip_wolf: bool,
+    bothways: bool,
 ) -> Vec<PyDccpEntry> {
     let refs: Vec<&str> = targets.iter().map(|s| s.as_str()).collect();
-    pipeline::search_database(query, &refs, &store.inner, z_cut, skip_wolf)
+    pipeline::search_database(query, &refs, &store.inner, z_cut, skip_wolf, bothways)
         .into_iter()
         .map(|e| PyDccpEntry { inner: e })
         .collect()
 }
 
 /// Iterative multi-domain detection: search → take best → mask → repeat.
+///
+/// bothways=True (default) searches both directions each round; see search_database.
 #[pyfunction]
-#[pyo3(signature = (query, targets, store, *, min_aligned=20, min_zscore=2.0, gap_tolerance=5, max_rounds=10, skip_wolf=false))]
+#[pyo3(signature = (query, targets, store, *, min_aligned=20, min_zscore=2.0, gap_tolerance=5, max_rounds=10, skip_wolf=false, bothways=true))]
 fn iterative_search(
     query: &str,
     targets: Vec<String>,
@@ -495,11 +511,12 @@ fn iterative_search(
     gap_tolerance: usize,
     max_rounds: usize,
     skip_wolf: bool,
+    bothways: bool,
 ) -> Vec<PySearchHit> {
     let refs: Vec<&str> = targets.iter().map(|s| s.as_str()).collect();
     pipeline::iterative_search(
         query, &refs, &store.inner,
-        min_aligned, min_zscore, gap_tolerance, max_rounds, skip_wolf,
+        min_aligned, min_zscore, gap_tolerance, max_rounds, skip_wolf, bothways,
     )
     .into_iter()
     .map(|h| PySearchHit { inner: h })

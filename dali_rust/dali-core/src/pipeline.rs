@@ -326,9 +326,31 @@ pub fn compare_pair(
 // Database search (one-to-many)
 // ---------------------------------------------------------------------------
 
+/// Re-express an alignment from the other side: cd1 and cd2 swap, every block
+/// swaps its ranges, and blocks are re-sorted by their new cd1 position.
+pub fn swap_orientation(entry: &DccpEntry) -> DccpEntry {
+    let mut blocks: Vec<AlignmentBlock> = entry.blocks.iter()
+        .map(|b| AlignmentBlock { l1: b.l2, r1: b.r2, l2: b.l1, r2: b.r1 })
+        .collect();
+    blocks.sort_by_key(|b| b.l1);
+    DccpEntry {
+        cd1: entry.cd2.clone(),
+        cd2: entry.cd1.clone(),
+        score: entry.score,
+        zscore: entry.zscore,
+        rmsd: entry.rmsd,
+        blocks,
+    }
+}
+
 /// One-to-many structural search with query-side amortization.
 ///
-/// Runs WOLF and/or PARSI paths (forward only: query→targets).
+/// Runs WOLF and/or PARSI paths query→targets. With `bothways`, also runs each
+/// target as cd1 against the query and swaps those hits into query orientation,
+/// which is what `dali.pl` pairwise mode does (do_one_pairwise without --oneway):
+/// WOLF and PARSI are both asymmetric, and for a small template inside a large
+/// query the template→query direction is often the one that finds it.
+///
 /// Filters self-comparisons, applies z-score cutoff, deduplicates by
 /// keeping the highest z-score per (cd1, cd2) pair, and sorts descending.
 ///
@@ -340,6 +362,7 @@ pub fn search_database(
     store: &ProteinStore,
     z_cut: f64,
     skip_wolf: bool,
+    bothways: bool,
 ) -> Vec<DccpEntry> {
     let mut all_results = Vec::new();
 
@@ -347,6 +370,20 @@ pub fn search_database(
         all_results.extend(run_wolf_path(query, targets, store));
     }
     all_results.extend(run_parsi_path(query, targets, store));
+
+    if bothways {
+        let q = [query];
+        for &target in targets.iter().filter(|&&t| t != query) {
+            let mut rev = Vec::new();
+            if !skip_wolf {
+                rev.extend(run_wolf_path(target, &q, store));
+            }
+            rev.extend(run_parsi_path(target, &q, store));
+            all_results.extend(
+                rev.iter().filter(|r| r.cd1 == target && r.cd2 == query).map(swap_orientation),
+            );
+        }
+    }
 
     // Filter self-comparisons
     all_results.retain(|r| r.cd1 != r.cd2);
@@ -378,7 +415,7 @@ pub fn search_database(
 
 /// Iterative multi-domain detection: search → take best → mask → repeat.
 ///
-/// Each round runs `search_database`, takes the top hit, computes the
+/// Each round runs `search_database` (in both directions if `bothways`), takes the top hit, computes the
 /// structural transform, masks aligned residues from the query, and repeats
 /// until no hit exceeds thresholds or the query becomes too small.
 pub fn iterative_search(
@@ -390,13 +427,14 @@ pub fn iterative_search(
     gap_tolerance: usize,
     max_rounds: usize,
     skip_wolf: bool,
+    bothways: bool,
 ) -> Vec<SearchHit> {
     let mut hits = Vec::new();
     let mut current_query = query.to_string();
 
     for round in 0..max_rounds {
         let target_refs: Vec<&str> = targets.iter().copied().collect();
-        let results = search_database(&current_query, &target_refs, store, min_zscore, skip_wolf);
+        let results = search_database(&current_query, &target_refs, store, min_zscore, skip_wolf, bothways);
 
         if results.is_empty() {
             break;
