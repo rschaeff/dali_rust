@@ -50,19 +50,12 @@ fn getp(x: f32) -> f32 {
     }
 }
 
-/// Compute Gaussian weight table (f32): w[i] = exp(-0.0025 * i^2).
-/// Thread-safe via OnceLock.
+/// Gaussian weight table w[i] = exp(-0.0025 * i^2) as gagaweights computes it
+/// (vectorized libmvec expf, see numerics::scoring::ENVELOPE_WEIGHT_BITS).
 fn gagaweights() -> &'static [f32; 101] {
     use std::sync::OnceLock;
     static WEIGHTS: OnceLock<[f32; 101]> = OnceLock::new();
-    WEIGHTS.get_or_init(|| {
-        let mut w = [0.0f32; 101];
-        for i in 0..101 {
-            let fi = i as f32;
-            w[i] = (-0.0025f32 * fi * fi).exp();
-        }
-        w
-    })
+    WEIGHTS.get_or_init(crate::numerics::scoring::envelope_weights)
 }
 
 /// DALICON scoring function using precomputed weights.
@@ -101,11 +94,12 @@ pub fn getgagadist(ca: &Array2<f64>, nres: usize) -> DaliconDistMat {
     let mut data = Array2::<i16>::zeros((size, size));
     for i in 1..=nres {
         for j in (i + 1)..=nres {
-            let dx = ca[[0, i - 1]] - ca[[0, j - 1]];
-            let dy = ca[[1, i - 1]] - ca[[1, j - 1]];
-            let dz = ca[[2, i - 1]] - ca[[2, j - 1]];
+            // gagatool.f gagadistance: REAL coordinates and arithmetic
+            let dx = ca[[0, i - 1]] as f32 - ca[[0, j - 1]] as f32;
+            let dy = ca[[1, i - 1]] as f32 - ca[[1, j - 1]] as f32;
+            let dz = ca[[2, i - 1]] as f32 - ca[[2, j - 1]] as f32;
             let dist = (dx * dx + dy * dy + dz * dz).sqrt();
-            let d = nint(10.0 * dist) as i16;
+            let d = crate::numerics::rounding::nint_f32(10.0f32 * dist) as i16;
             data[[i, j]] = d;
             data[[j, i]] = d;
         }
@@ -1179,7 +1173,7 @@ fn lean_mc(
         }
 
         // Accelerate cooling
-        if ntetra > 0 && (nacc_total as f64 / ntetra as f64) > 0.1 {
+        if ntetra > 0 && (nacc_total as f32 / ntetra as f32) > 0.1f32 {
             alfa = 10.0f32 * alfa;
         }
     }
