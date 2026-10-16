@@ -174,16 +174,17 @@ pub fn read_dat<P: AsRef<Path>>(filepath: P) -> Result<Protein, DatError> {
                 let node_char = dline.chars().nth(5).unwrap_or('-');
                 let node_type = NodeType::from_char(node_char);
 
-                // Parse child pointers from the 13x area (pos 6-18)
-                // These are 3 integers in i4 format: left_child, right_child, nres_or_nseg
-                let child_str = if dline.len() > 6 {
-                    &dline[6..dline.len().min(19)]
-                } else {
-                    ""
+                // Child pointers: Fortran (i4,1x,a1,1x,3i4) puts them at pos 7-10 and
+                // 11-14 (pos 15-18 is the node size). Files from the pre-2026-10 Rust
+                // writer have them one column left (6-9, 10-13); trimming the 7-10 /
+                // 11-14 windows reads those correctly too for children < 1000.
+                let field = |a: usize, b: usize| -> usize {
+                    dline.get(a..b.min(dline.len()))
+                        .and_then(|s| s.trim().parse().ok())
+                        .unwrap_or(0)
                 };
-                let child_ints = parse_fixed_ints_lenient(child_str, 4);
-                let left_child_val = child_ints.first().copied().unwrap_or(0) as usize;
-                let right_child_val = child_ints.get(1).copied().unwrap_or(0) as usize;
+                let left_child_val = field(7, 11);
+                let right_child_val = field(11, 15);
 
                 // 400i4 starting at position 19: domns + segment ranges
                 // ints[0] = nseg (number of segments in this domain)
@@ -243,32 +244,190 @@ pub fn read_dat<P: AsRef<Path>>(filepath: P) -> Result<Protein, DatError> {
     })
 }
 
+/// One node of the SSE-level domain tree (the second `>>>>` section of a .dat file).
+///
+/// This is the tree PARSI reads: each node lists the SSEs (1-based segment indices,
+/// ascending) that belong to it.
+#[derive(Debug, Clone, PartialEq)]
+pub struct SseTreeNode {
+    pub node_type: char,
+    pub left_child: usize,  // 1-based, 0 = none
+    pub right_child: usize, // 1-based, 0 = none
+    pub sses: Vec<usize>,
+}
+
+/// Derive the SSE-level domain tree from the residue-level tree.
+///
+/// Port of puutos.f `assignsegments` + `prunetree` + `getdomseglist`:
+///   1. each residue belongs to the deepest (highest-index) node covering it
+///   2. each SSE goes to the node owning its midpoint residue
+///   3. parents collect their children's SSEs
+///   4. empty nodes are deleted (the parent absorbs the sibling's children)
+///   5. surviving nodes are renumbered top-down, preserving order
+pub fn derive_sse_tree(
+    nres: usize,
+    segments: &[Segment],
+    domain_tree: &[DomainNode],
+) -> Vec<SseTreeNode> {
+    let ndom = domain_tree.len();
+    if ndom == 0 {
+        return Vec::new();
+    }
+
+    // 1-based node arrays, indexed by position in domain_tree (+1)
+    let mut child = vec![[0usize; 2]; ndom + 1];
+    let mut node_type = vec![' '; ndom + 1];
+    for (i, node) in domain_tree.iter().enumerate() {
+        let idom = i + 1;
+        let valid = |c: usize| if c <= ndom { c } else { 0 };
+        child[idom] = [valid(node.left_child), valid(node.right_child)];
+        node_type[idom] = node.node_type.to_char();
+    }
+    let mut parent = vec![0usize; ndom + 1];
+    for idom in 1..=ndom {
+        for &c in &child[idom] {
+            if c > 0 {
+                parent[c] = idom;
+            }
+        }
+    }
+
+    // assignsegments: bottom node per residue, then segment midpoints
+    let mut bottom = vec![0usize; nres + 1];
+    for (i, node) in domain_tree.iter().enumerate() {
+        for &(s, e) in &node.segments {
+            for ires in (s as usize).max(1)..=(e as usize).min(nres) {
+                bottom[ires] = i + 1;
+            }
+        }
+    }
+    let mut node_sses: Vec<Vec<usize>> = vec![Vec::new(); ndom + 1];
+    for (iseg, seg) in segments.iter().enumerate() {
+        let mid = ((seg.start + seg.end) / 2) as usize;
+        let idom = if mid <= nres { bottom[mid] } else { 0 };
+        if idom > 0 {
+            node_sses[idom].push(iseg + 1);
+        }
+    }
+
+    // prunetree: build parent ranges bottom-up
+    for idom in (1..=ndom).rev() {
+        let pnode = parent[idom];
+        if pnode > 0 && child[pnode][0] == idom {
+            let [inode, jnode] = child[pnode];
+            let mut add = node_sses[inode].clone();
+            if jnode > 0 {
+                add.extend_from_slice(&node_sses[jnode]);
+            }
+            node_sses[pnode].extend(add);
+        }
+    }
+
+    // delete empty nodes
+    let mut active = vec![true; ndom + 1];
+    for idom in (1..=ndom).rev() {
+        let pnode = parent[idom];
+        if !(active[idom] && pnode > 0) {
+            continue;
+        }
+        let [c1, c2] = child[pnode];
+        let jnode = if c2 == idom { c1 } else { c2 }; // sibling
+        if node_sses[idom].is_empty() && jnode > 0 {
+            child[pnode] = child[jnode];
+            active[jnode] = false;
+        }
+    }
+    for idom in 1..=ndom {
+        if !active[idom] || node_sses[idom].is_empty() {
+            parent[idom] = 0;
+            child[idom] = [0, 0];
+        }
+    }
+    for idom in 1..=ndom {
+        for &c in &child[idom].clone() {
+            if c > 0 {
+                parent[c] = idom;
+            }
+        }
+    }
+
+    // minimal tree top-down
+    let mut list = vec![1usize];
+    let mut tsil = vec![0usize; ndom + 1];
+    tsil[1] = 1;
+    for idom in 2..=ndom {
+        if parent[idom] > 0 {
+            list.push(idom);
+            tsil[idom] = list.len();
+        }
+    }
+
+    list.iter()
+        .map(|&idom| {
+            let mut sses = node_sses[idom].clone();
+            sses.sort_unstable();
+            sses.dedup();
+            SseTreeNode {
+                node_type: node_type[idom],
+                left_child: tsil[child[idom][0]],
+                right_child: tsil[child[idom][1]],
+                sses,
+            }
+        })
+        .collect()
+}
+
+/// Section header: Fortran `('>>>> ',a4,a1,...)` layout when the code fits in 5
+/// characters, whitespace-delimited otherwise (both readers tokenize on whitespace).
+fn section_header(code: &str, fields: &[usize], tail: &str) -> String {
+    let fixed = code.len() <= 5
+        && !code.contains(char::is_whitespace)
+        && fields.iter().all(|&v| v < 10_000);
+    let mut s = String::from(">>>> ");
+    if fixed {
+        s.push_str(&format!("{:<5}", code));
+        for v in fields {
+            s.push_str(&format!("{:>5}", v));
+        }
+        if !tail.is_empty() {
+            s.push_str("  ");
+            s.push_str(tail);
+        }
+    } else {
+        s.push_str(code);
+        for v in fields {
+            s.push_str(&format!(" {}", v));
+        }
+        if !tail.is_empty() {
+            s.push(' ');
+            s.push_str(tail);
+        }
+    }
+    s
+}
+
 /// Write a Protein to a DaliLite .dat file.
 ///
-/// Produces a file with 3 `>>>>` sections that `read_dat` can parse:
+/// Produces the same 3 `>>>>` sections as Fortran puutos.f:
 ///   Section 1: header + segments (6i10) + CA coords (10f8.1)
-///   Section 2: SSE hierarchy header (content skipped by read_dat)
-///   Section 3: domain decomposition tree
+///   Section 2: SSE-level domain tree, format (i4,1x,a1,1x,3i4,200i4) — read by PARSI
+///   Section 3: residue-level domain tree, same format with node size + ranges
 pub fn write_dat<P: AsRef<Path>>(protein: &Protein, filepath: P) -> Result<(), DatError> {
     let mut f = std::fs::File::create(filepath.as_ref())
         .map_err(|e| DatError::Io(e.to_string()))?;
+    let io = |e: std::io::Error| DatError::Io(e.to_string());
 
     let code = &protein.code;
-
-    // Build secondary structure string
     let secstr_str: String = protein.secstr.iter().map(|s| s.to_char()).collect();
 
-    // Section 1 header: >>>> CODE NRES NSEG NA NB SECSTR
-    // Whitespace-delimited (supports codes of any length).
-    writeln!(f, ">>>> {} {} {} {} {} {}",
-             code, protein.nres, protein.nseg, protein.na, protein.nb, secstr_str)
-        .map_err(|e| DatError::Io(e.to_string()))?;
+    // Section 1: header, segments, CA
+    writeln!(f, "{}", section_header(
+        code, &[protein.nres, protein.nseg, protein.na, protein.nb], &secstr_str)).map_err(io)?;
 
-    // Segments: 6i10 format (index, start, end, check_start, check_end, checkx)
     for (i, seg) in protein.segments.iter().enumerate() {
         writeln!(f, "{:>10}{:>10}{:>10}{:>10}{:>10}{:>10}",
                  i + 1, seg.start, seg.end, seg.check_start, seg.check_end, seg.checkx)
-            .map_err(|e| DatError::Io(e.to_string()))?;
+            .map_err(io)?;
     }
 
     // CA coordinates: 10f8.1 format (x1,y1,z1,x2,y2,z2,...)
@@ -280,39 +439,35 @@ pub fn write_dat<P: AsRef<Path>>(protein: &Protein, filepath: P) -> Result<(), D
         for k in 0..nfloats {
             let res = (val_idx + k) / 3;
             let coord = (val_idx + k) % 3;
-            let val = protein.ca[[coord, res]];
-            line.push_str(&format!("{:>8.1}", val));
+            line.push_str(&format!("{:>8.1}", protein.ca[[coord, res]]));
         }
-        writeln!(f, "{}", line).map_err(|e| DatError::Io(e.to_string()))?;
+        writeln!(f, "{}", line).map_err(io)?;
         val_idx += nfloats;
     }
 
-    // Section 2: SSE hierarchy (header only — read_dat skips content)
-    writeln!(f, ">>>> {} {} {} {} {} {}",
-             code, protein.nres, protein.nseg, protein.na, protein.nb, secstr_str)
-        .map_err(|e| DatError::Io(e.to_string()))?;
+    // Section 2: SSE-level domain tree
+    let sse_tree = derive_sse_tree(protein.nres, &protein.segments, &protein.domain_tree);
+    writeln!(f, "{}", section_header(code, &[sse_tree.len()], "")).map_err(io)?;
+    for (i, node) in sse_tree.iter().enumerate() {
+        let mut line = format!("{:>4} {} {:>4}{:>4}{:>4}",
+            i + 1, node.node_type, node.left_child, node.right_child, node.sses.len());
+        for &s in &node.sses {
+            line.push_str(&format!("{:>4}", s));
+        }
+        writeln!(f, "{}", line).map_err(io)?;
+    }
 
-    // Section 3: domain decomposition tree
-    let ndom = protein.domain_tree.len();
-    writeln!(f, ">>>> {} {}", code, ndom)
-        .map_err(|e| DatError::Io(e.to_string()))?;
-
+    // Section 3: residue-level domain tree
+    writeln!(f, "{}", section_header(code, &[protein.domain_tree.len()], "")).map_err(io)?;
     for node in &protein.domain_tree {
-        let type_char = match node.node_type {
-            NodeType::Root => '*',
-            NodeType::Split => '+',
-            NodeType::Minus => '-',
-        };
-        // pos 0-3: i4 index, pos 4: space, pos 5: type char
-        // pos 6-9: i4 left_child, pos 10-13: i4 right_child
-        // pos 14-18: 5 spaces (padding to position 19)
-        // pos 19+: i4 nseg, then i4 pairs (start, end)
-        let mut line = format!("{:>4} {:1}{:>4}{:>4}     {:>4}",
-            node.index, type_char, node.left_child, node.right_child, node.nseg);
+        let size: u32 = node.segments.iter().map(|&(s, e)| e + 1 - s).sum();
+        let mut line = format!("{:>4} {} {:>4}{:>4}{:>4}{:>4}",
+            node.index, node.node_type.to_char(), node.left_child, node.right_child,
+            size, node.segments.len());
         for &(start, end) in &node.segments {
             line.push_str(&format!("{:>4}{:>4}", start, end));
         }
-        writeln!(f, "{}", line).map_err(|e| DatError::Io(e.to_string()))?;
+        writeln!(f, "{}", line).map_err(io)?;
     }
 
     Ok(())

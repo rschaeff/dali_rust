@@ -5,7 +5,7 @@ pub mod import;
 pub mod pdb;
 pub mod secstr;
 
-pub use dat::{read_dat, write_dat, DatError};
+pub use dat::{derive_sse_tree, read_dat, write_dat, DatError, SseTreeNode};
 pub use domain::build_domain_tree;
 pub use dssp::compute_dssp;
 pub use import::{import_pdb, ImportError};
