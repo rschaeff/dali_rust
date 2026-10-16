@@ -9,6 +9,8 @@
 //!   Fortran loop order
 //! - the spectral cut's "random" start is gfortran's RAN intrinsic reseeded on every
 //!   call (ran.f is not linked), i.e. a constant vector; see `gfortran_ran`
+//! - getcoor reads coordinates list-directed: a field of -100 or below runs into
+//!   its neighbour and the unread coordinates keep stale values (see read_pdb_atoms)
 //! - getcoor's backbone-incomplete rollback leaves the dropped residue's first atom
 //!   behind, attributed to the next residue (or, at end of file, to residue nres+1,
 //!   where it only affects centering)
@@ -156,6 +158,7 @@ pub fn read_pdb_atoms<P: AsRef<Path>>(
     let mut resno: Vec<String> = Vec::new();
     let mut nres = 0usize;
     let mut oldresname: Vec<u8> = b"!@#$  ".to_vec();
+    let mut slots: Vec<[f32; 3]> = Vec::new(); // setup_protein's xyz array, by atom slot
     let (mut ln, mut lc, mut lca, mut lo) = (true, true, true, true);
 
     // Drop residue nres (incomplete backbone). Fortran sets natom to the index of the
@@ -225,17 +228,25 @@ pub fn read_pdb_atoms<P: AsRef<Path>>(
             b"O  " => lo = false,
             _ => {}
         }
-        // list-directed read of columns 31-54
+        // List-directed read of columns 31-54, as getcoor does. A coordinate of
+        // -100 or below fills its 8-column field and runs into the previous one
+        // ("48.118-100.952"); the read then fails at that token: values before it
+        // are assigned, the rest keep whatever this atom slot of the (static,
+        // zero-initialised) coordinate array last held. dsspcmbi's fscanf reads
+        // such lines correctly, so only puu sees the stale coordinates.
+        let slot = atoms.len();
+        if slots.len() <= slot {
+            slots.resize(slot + 1, [0.0; 3]);
+        }
         let field = String::from_utf8_lossy(&line[30..54]).to_string();
-        let v: Vec<f32> = field.split_whitespace().filter_map(|s| s.parse().ok()).collect();
-        let xyz = if v.len() >= 3 {
-            [v[0], v[1], v[2]]
-        } else {
-            // run-together fields: fall back to the fixed PDB columns
-            let f = |a: usize, b: usize| String::from_utf8_lossy(&line[a..b]).trim().parse().unwrap_or(0.0);
-            [f(30, 38), f(38, 46), f(46, 54)]
-        };
-        atoms.push(PuuAtom { name, res: nres, xyz });
+        let mut toks = field.split(|c: char| c.is_whitespace() || c == ',').filter(|t| !t.is_empty());
+        for k in 0..3 {
+            match toks.next().and_then(|t| t.parse::<f32>().ok()) {
+                Some(v) => slots[slot][k] = v,
+                None => break,
+            }
+        }
+        atoms.push(PuuAtom { name, res: nres, xyz: slots[slot] });
     }
     if nres > 0 && (ln || lo || lc || lca) {
         rollback(&mut atoms, nres);
