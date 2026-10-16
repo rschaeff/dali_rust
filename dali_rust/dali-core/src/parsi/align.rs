@@ -405,15 +405,15 @@ fn output2(
             if lseqtl && trans[jres as usize * nseg + jseg] < trans[ires as usize * nseg + iseg] {
                 continue;
             }
-            let ii_idx = (iistart + ires) as usize;
-            let jj_idx = (jjstart + jres) as usize;
-            let ij_idx = (iwhere + jres) as usize;
-            if ii_idx >= EXDIM || jj_idx >= EXDIM || ij_idx >= EXDIM {
+            // Fortran's HACK bound: jjstart+jres or iwhere+jres beyond exdim.
+            // A negative iwhere (no ij block, start(iseg,jseg) < 0) passes it
+            // and simply contributes no pair term.
+            if jjstart + jres >= EXDIM as i32 || iwhere + jres >= EXDIM as i32 {
                 continue;
             }
-            let mut x = ex[ii_idx] + ex[jj_idx];
+            let mut x = ex[(iistart + ires) as usize] + ex[(jjstart + jres) as usize];
             if iwhere >= 0 {
-                x += ex[ij_idx];
+                x += ex[(iwhere + jres) as usize];
             }
             if x > cut {
                 ali[iseg] = ires;
