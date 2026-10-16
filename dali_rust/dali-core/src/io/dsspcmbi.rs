@@ -218,7 +218,10 @@ CYHCSHCSSCYXILUPRZPR0CPRTRYHOH";
     b'X' // "Let's assume that anything is an aminoacid."
 }
 
-/// strtod-like scan of three doubles, as fscanf("%lf") from the stream position.
+/// fscanf("%lf") x n from the stream position: strtod's longest valid prefix, so
+/// run-together fields split where a number can no longer continue
+/// ("640.6121103.3031323.682" -> 640.6121103, .3031323, .682 -- garbage, but it is
+/// what dsspcmbi computes with for coordinates >= 1000 A).
 fn scan_doubles(s: &[u8], n: usize) -> Vec<f64> {
     let mut out = Vec::with_capacity(n);
     let mut i = 0;
@@ -230,8 +233,14 @@ fn scan_doubles(s: &[u8], n: usize) -> Vec<f64> {
         if i < s.len() && (s[i] == b'-' || s[i] == b'+') {
             i += 1;
         }
-        while i < s.len() && (s[i].is_ascii_digit() || s[i] == b'.') {
+        while i < s.len() && s[i].is_ascii_digit() {
             i += 1;
+        }
+        if i < s.len() && s[i] == b'.' {
+            i += 1;
+            while i < s.len() && s[i].is_ascii_digit() {
+                i += 1;
+            }
         }
         if i < s.len() && (s[i] == b'e' || s[i] == b'E') {
             let save = i;
@@ -247,7 +256,13 @@ fn scan_doubles(s: &[u8], n: usize) -> Vec<f64> {
                 i = save;
             }
         }
-        match std::str::from_utf8(&s[start..i]).ok().and_then(|t| t.parse::<f64>().ok()) {
+        // Rust's parser rejects a bare "." or "-.5"-style forms strtod accepts
+        let tok = std::str::from_utf8(&s[start..i]).unwrap_or("");
+        let fixed = if tok.starts_with('.') { format!("0{}", tok) }
+            else if tok.starts_with("-.") { format!("-0{}", &tok[1..]) }
+            else if tok.starts_with("+.") { format!("0{}", &tok[1..]) }
+            else { tok.to_string() };
+        match fixed.parse::<f64>().ok() {
             Some(v) => out.push(v),
             None => break,
         }
