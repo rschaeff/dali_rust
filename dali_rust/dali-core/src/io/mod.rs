@@ -1,6 +1,7 @@
 pub mod dat;
 pub mod domain;
 pub mod dssp;
+pub mod dsspcmbi;
 pub mod import;
 pub mod pdb;
 pub mod puu;
