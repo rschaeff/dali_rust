@@ -20,7 +20,7 @@ pub struct ParsiProtein {
     pub checkx: Vec<i32>,
     // Domain tree
     pub ndom: usize,
-    pub node_child: Vec<i32>,        // flat [child0_0, child0_1, child1_0, child1_1, ...]
+    pub node_child: Vec<i32>,        // flat [side * ndom_alloc + idom]; right children start at ndom_alloc
     pub domns: Vec<i32>,             // number of segments per domain
     pub domseglist: Vec<i32>,        // flat [seg indices], indexed by domseglist[j * (ndom+1) + idom]
     pub domseglist_stride: usize,    // max_segs_per_dom (row stride)
@@ -30,13 +30,14 @@ impl ParsiProtein {
     /// Get node_child[side, idom] (side: 0=left, 1=right).
     #[inline]
     pub fn child(&self, side: usize, idom: usize) -> i32 {
-        self.node_child[side * (self.ndom + 1) + idom]
+        self.node_child[side * self.ndom_alloc() + idom]
     }
 
     /// Set node_child[side, idom].
     #[inline]
     pub fn set_child(&mut self, side: usize, idom: usize, val: i32) {
-        self.node_child[side * (self.ndom + 1) + idom] = val;
+        let stride = self.ndom_alloc();
+        self.node_child[side * stride + idom] = val;
     }
 
     /// Get domseglist[j, idom].
