@@ -193,7 +193,10 @@ pub fn dowork_parsi(
                                         &cache.minseglen, &cache.ngap, BL);
     let ci0 = init_ci_ni(&mi, nseg);
 
-    let string = format!("{:5}{:5}", cd1, cd2);
+    // Tag for the refine lines. Fortran pads to a5,a5; unpadded here, because
+    // parse_refine_line splits on whitespace and a padded short code ("qA   ")
+    // would split the tag and drop every hit.
+    let string = format!("{}{}", cd1, cd2);
 
     let mut output_lines = Vec::new();
     align(

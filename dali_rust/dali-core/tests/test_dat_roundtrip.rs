@@ -272,3 +272,25 @@ fn test_parsi_long_segment_aborts_like_fortran() {
     eprintln!("longseg -> 101mA: {} PARSI hits from domains without the long segment", n);
     let _ = fs::remove_dir_all(&dir);
 }
+
+/// PARSI results must not depend on code length. Codes shorter than 5 characters
+/// used to be space-padded into the refine-line tag, which the parser then split,
+/// silently dropping every hit -- DPAM's RustDALI names its query "q" -> "qA".
+#[test]
+fn test_parsi_independent_of_code_length() {
+    let dir = scratch("codelen");
+    let mut results = Vec::new();
+    for (a, b) in [("qA", "tA"), ("101mA", "1a00A"), ("query_101m", "000140533")] {
+        fs::copy(format!("{}/101mA.dat", DAT_DIR_5), dir.join(format!("{}.dat", a))).unwrap();
+        fs::copy(format!("{}/1a00A.dat", DAT_DIR_5), dir.join(format!("{}.dat", b))).unwrap();
+        let store = ProteinStore::new(&dir);
+        let mut z: Vec<i64> = run_parsi_path(a, &[b], &store).iter()
+            .map(|h| (h.zscore * 1000.0).round() as i64).collect();
+        z.sort();
+        assert!(!z.is_empty(), "{} -> {}: no PARSI hits", a, b);
+        results.push(z);
+    }
+    assert_eq!(results[0], results[1]);
+    assert_eq!(results[1], results[2]);
+    let _ = fs::remove_dir_all(&dir);
+}
