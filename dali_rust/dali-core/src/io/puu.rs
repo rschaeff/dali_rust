@@ -153,7 +153,11 @@ pub fn read_pdb_atoms<P: AsRef<Path>>(
     chainid: u8,
     lhetatm: bool,
 ) -> Result<PuuStructure, PuuError> {
-    let text = read_text(path)?;
+    read_pdb_atoms_text(&read_text(path)?, chainid, lhetatm)
+}
+
+/// getcoor on PDB text already in memory.
+pub fn read_pdb_atoms_text(text: &str, chainid: u8, lhetatm: bool) -> Result<PuuStructure, PuuError> {
     let mut atoms: Vec<PuuAtom> = Vec::new();
     let mut resno: Vec<String> = Vec::new();
     let mut nres = 0usize;

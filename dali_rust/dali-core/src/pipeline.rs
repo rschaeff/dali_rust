@@ -12,6 +12,7 @@ use std::collections::{HashMap, HashSet};
 use rayon::prelude::*;
 
 use crate::types::{AlignmentBlock, DccpEntry, SearchHit, mask_protein};
+use crate::io::{import_pdb_text, ImportError};
 use crate::store::ProteinStore;
 use crate::numerics::compute_transform;
 use crate::wolf;
@@ -491,6 +492,8 @@ pub fn iterative_search(
             blocks: best.blocks.clone(),
             rotation,
             translation,
+            query_resids: alignments.iter().map(|&(q, _)| query_prot.resid_map[q - 1]).collect(),
+            qlen: query_prot.nres,
             alignments,
             round,
         });
@@ -538,4 +541,145 @@ pub fn iterative_search(
     }
 
     hits
+}
+
+// ---------------------------------------------------------------------------
+// Iterative search on PDB text (DPAM step 7, Fortran semantics)
+// ---------------------------------------------------------------------------
+
+/// Parameters for [`iterative_search_pdb`]; defaults are DPAM step 7's.
+#[derive(Debug, Clone)]
+pub struct PdbIterParams {
+    pub min_aligned: usize,
+    pub min_zscore: f64,
+    pub min_remaining: usize,
+    pub max_rounds: usize,
+    pub bothways: bool,
+}
+
+impl Default for PdbIterParams {
+    fn default() -> Self {
+        PdbIterParams { min_aligned: 20, min_zscore: 2.0, min_remaining: 20, max_rounds: usize::MAX, bothways: true }
+    }
+}
+
+/// DPAM `get_domain_range`: sort, split where the next residue number exceeds the
+/// previous by more than max(5, 0.05 * n); returns inclusive (first, last) ranges.
+pub fn dpam_domain_ranges(resids: &[i32]) -> Vec<(i32, i32)> {
+    let mut r = resids.to_vec();
+    r.sort_unstable();
+    let cutoff = 5.0f64.max(r.len() as f64 * 0.05);
+    let mut segs: Vec<(i32, i32)> = Vec::new();
+    for &x in &r {
+        match segs.last_mut() {
+            Some(s) if (x as f64) <= s.1 as f64 + cutoff => s.1 = x,
+            _ => segs.push((x, x)),
+        }
+    }
+    segs
+}
+
+/// Residue numbers (columns 23-26 as an integer) of the ATOM records, as DPAM's
+/// step 7 reads them; insertion codes and chains are ignored, as there.
+fn atom_resids(text: &str) -> Vec<i32> {
+    let mut v: Vec<i32> = text.lines()
+        .filter(|l| l.starts_with("ATOM"))
+        .filter_map(|l| l.get(22..26).and_then(|s| s.trim().parse().ok()))
+        .collect();
+    v.sort_unstable();
+    v.dedup();
+    v
+}
+
+/// Iterative domain detection exactly as DPAM step 7 drives Fortran DaliLite:
+/// every round re-imports the CURRENT query PDB (so DSSP, PUU and the .dat are
+/// recomputed for what is left), aligns it against the targets, takes the best hit,
+/// removes the residues spanned by `dpam_domain_ranges` of its aligned query residue
+/// numbers, and writes the next round's query from the ATOM records that remain.
+///
+/// Stops when no hit reaches `min_zscore`, the best hit aligns fewer than
+/// `min_aligned` residues, or fewer than `min_remaining` residues would remain.
+/// Round r's query is stored as `{code}_r{r}`.
+pub fn iterative_search_pdb(
+    query_pdb: &str,
+    chain: &str,
+    code: &str,
+    targets: &[&str],
+    store: &ProteinStore,
+    p: &PdbIterParams,
+) -> Result<Vec<SearchHit>, ImportError> {
+    let mut hits = Vec::new();
+    let mut text = query_pdb.to_string();
+    for round in 0..p.max_rounds {
+        let mut prot = match import_pdb_text(&text, chain, code) {
+            Ok(x) => x,
+            Err(e) if round == 0 => return Err(e),
+            Err(_) => break, // what remains no longer imports (e.g. no complete residue)
+        };
+        let qcode = format!("{}_r{}", code, round);
+        prot.code = qcode.clone();
+        store.add_protein(prot)
+            .map_err(|e| ImportError::Pdb(crate::io::PdbReadError::Io(e.to_string())))?;
+        let qprot = match store.get_protein(&qcode) {
+            Ok(x) => x,
+            Err(_) => break,
+        };
+
+        let results = search_database(&qcode, targets, store, p.min_zscore, false, p.bothways);
+        let best = match results.first() {
+            Some(b) => b,
+            None => break,
+        };
+        let n_aligned: usize = best.blocks.iter().map(|b| (b.r1 - b.l1 + 1) as usize).sum();
+        if n_aligned < p.min_aligned {
+            break;
+        }
+        let template = match store.get_protein(&best.cd2) {
+            Ok(t) => t,
+            Err(_) => break,
+        };
+        let (rotation, translation) = match compute_transform(&qprot.ca, &template.ca, &best.blocks) {
+            Some(x) => x,
+            None => break,
+        };
+        let mut alignments = Vec::new();
+        for b in &best.blocks {
+            for k in 0..(b.r1 - b.l1 + 1) as usize {
+                let (qi, ti) = (b.l1 as usize - 1 + k, b.l2 as usize - 1 + k);
+                if qi < qprot.nres && ti < template.nres {
+                    alignments.push((qi + 1, ti + 1));
+                }
+            }
+        }
+        let query_resids: Vec<i32> = alignments.iter().map(|&(q, _)| qprot.resid_map[q - 1]).collect();
+        let present = atom_resids(&text);
+        hits.push(SearchHit {
+            cd2: best.cd2.clone(),
+            zscore: best.zscore,
+            score: best.score,
+            rmsd: best.rmsd,
+            nblock: best.blocks.len(),
+            blocks: best.blocks.clone(),
+            rotation,
+            translation,
+            alignments,
+            round,
+            query_resids: query_resids.clone(),
+            qlen: present.len(),
+        });
+
+        let ranges = dpam_domain_ranges(&query_resids);
+        let removed = |r: i32| ranges.iter().any(|&(a, b)| r >= a && r <= b);
+        let remain: Vec<i32> = present.iter().copied().filter(|&r| !removed(r)).collect();
+        if remain.len() < p.min_remaining {
+            break;
+        }
+        let keep: HashSet<i32> = remain.into_iter().collect();
+        text = text.lines()
+            .filter(|l| l.starts_with("ATOM"))
+            .filter(|l| l.get(22..26).and_then(|s| s.trim().parse::<i32>().ok()).map_or(false, |r| keep.contains(&r)))
+            .map(|l| format!("{}\n", l))
+            .collect();
+    }
+    Ok(hits)
 }

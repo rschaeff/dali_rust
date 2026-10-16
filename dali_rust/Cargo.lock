@@ -215,6 +215,7 @@ name = "dali-python"
 version = "0.1.0"
 dependencies = [
  "dali-core",
+ "flate2",
  "numpy",
  "pyo3",
 ]

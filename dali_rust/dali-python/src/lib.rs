@@ -459,6 +459,14 @@ impl PySearchHit {
     #[getter]
     fn round(&self) -> usize { self.inner.round }
 
+    /// PDB residue number of the query residue in each alignment pair.
+    #[getter]
+    fn query_resids(&self) -> Vec<i32> { self.inner.query_resids.clone() }
+
+    /// Residues in this round's query (DPAM's qlen).
+    #[getter]
+    fn qlen(&self) -> usize { self.inner.qlen }
+
     fn __repr__(&self) -> String {
         format!("SearchHit(cd2='{}', zscore={:.1}, score={:.1}, rmsd={:.1}, nblock={}, round={})",
                 self.inner.cd2, self.inner.zscore, self.inner.score,
@@ -523,6 +531,47 @@ fn iterative_search(
     .collect()
 }
 
+/// DPAM step 7 with Fortran semantics: each round re-imports the remaining query
+/// ATOM records (DSSP, PUU, .dat recomputed), takes the best hit, removes the
+/// residues spanned by DPAM's get_domain_range of its aligned residues, repeats.
+#[pyfunction]
+#[pyo3(signature = (query_pdb, targets, store, *, chain="", code="q", min_aligned=20, min_zscore=2.0, min_remaining=20, max_rounds=None, bothways=true))]
+fn iterative_search_pdb(
+    query_pdb: &str,
+    targets: Vec<String>,
+    store: &PyProteinStore,
+    chain: &str,
+    code: &str,
+    min_aligned: usize,
+    min_zscore: f64,
+    min_remaining: usize,
+    max_rounds: Option<usize>,
+    bothways: bool,
+) -> PyResult<Vec<PySearchHit>> {
+    use std::io::Read;
+    let file = std::fs::File::open(query_pdb)
+        .map_err(|e| PyValueError::new_err(format!("{}: {}", query_pdb, e)))?;
+    let mut text = String::new();
+    let r = if query_pdb.ends_with(".gz") {
+        flate2::read::GzDecoder::new(file).read_to_string(&mut text)
+    } else {
+        let mut f = file;
+        f.read_to_string(&mut text)
+    };
+    r.map_err(|e| PyValueError::new_err(format!("{}: {}", query_pdb, e)))?;
+    let refs: Vec<&str> = targets.iter().map(|s| s.as_str()).collect();
+    let params = pipeline::PdbIterParams {
+        min_aligned,
+        min_zscore,
+        min_remaining,
+        max_rounds: max_rounds.unwrap_or(usize::MAX),
+        bothways,
+    };
+    pipeline::iterative_search_pdb(&text, chain, code, &refs, &store.inner, &params)
+        .map(|v| v.into_iter().map(|h| PySearchHit { inner: h }).collect())
+        .map_err(|e| PyValueError::new_err(e.to_string()))
+}
+
 // ── Module definition ─────────────────────────────────────────────
 
 #[pymodule]
@@ -543,5 +592,6 @@ fn dali(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(py_mask_protein, m)?)?;
     m.add_function(wrap_pyfunction!(search_database, m)?)?;
     m.add_function(wrap_pyfunction!(iterative_search, m)?)?;
+    m.add_function(wrap_pyfunction!(iterative_search_pdb, m)?)?;
     Ok(())
 }

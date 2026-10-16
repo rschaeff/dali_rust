@@ -69,10 +69,32 @@ pub fn import_pdb_dalilite<P: AsRef<Path>>(
     chain: &str,
     pdb_code: &str,
 ) -> Result<Protein, ImportError> {
-    use super::dsspcmbi::dssp_from_pdb;
-    use super::puu::{puu, read_pdb_atoms, to_domain_tree, PuuParams};
+    let p = path.as_ref();
+    let file = std::fs::File::open(p)
+        .map_err(|e| ImportError::Pdb(PdbReadError::Io(format!("{}: {}", p.display(), e))))?;
+    let mut text = String::new();
+    use std::io::Read;
+    let r = if p.extension().map_or(false, |x| x == "gz") {
+        flate2::read::GzDecoder::new(file).read_to_string(&mut text)
+    } else {
+        let mut f = file;
+        f.read_to_string(&mut text)
+    };
+    r.map_err(|e| ImportError::Pdb(PdbReadError::Io(format!("{}: {}", p.display(), e))))?;
+    import_pdb_text(&text, chain, pdb_code)
+}
 
-    let dssp = dssp_from_pdb(path.as_ref()).map_err(|e| ImportError::Dssp(e.to_string()))?;
+/// import.pl-equivalent import of PDB-format text already in memory (used by the
+/// iterative search, which re-imports the masked query every round as DPAM does).
+pub fn import_pdb_text(
+    text: &str,
+    chain: &str,
+    pdb_code: &str,
+) -> Result<Protein, ImportError> {
+    use super::dsspcmbi::dssp_from_text;
+    use super::puu::{puu, read_pdb_atoms_text, to_domain_tree, PuuParams};
+
+    let dssp = dssp_from_text(text).map_err(|e| ImportError::Dssp(e.to_string()))?;
     // chain: as given, else the first residue's
     let chainid: u8 = match chain.as_bytes().first() {
         Some(&c) => c,
@@ -87,7 +109,7 @@ pub fn import_pdb_dalilite<P: AsRef<Path>>(
     }
     let dssp_in = dssp.to_puu_input(chainid);
 
-    let atoms = read_pdb_atoms(path.as_ref(), chainid, true)
+    let atoms = read_pdb_atoms_text(text, chainid, true)
         .map_err(|e| ImportError::Pdb(PdbReadError::Parse(e.to_string())))?;
     let tree = puu(&atoms, &dssp_in, &PuuParams::default());
 
