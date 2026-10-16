@@ -76,10 +76,14 @@ fn extract_domain_info(prot: &Protein) -> Cd1DomainInfo {
 ///
 /// Returns (nint(10000*mean), nint(10000*sigma)).
 fn compute_minscore(node_size: usize) -> (i32, i32) {
-    let x = (node_size as f64).min(400.0);
-    let mean = 7.9494 + 0.70852 * x + 2.5895e-4 * x * x - 1.9156e-6 * x * x * x;
-    let sigma = 1.0_f64.max(0.50 * mean);
-    (nint(10000.0 * mean), nint(10000.0 * sigma))
+    // REAL arithmetic, as in comparemodules.f
+    let x = (node_size as f32).min(400.0f32);
+    let mean = 7.9494f32 + 0.70852f32 * x + 2.5895e-4f32 * x * x - 1.9156e-6f32 * x * x * x;
+    let sigma = 1.0f32.max(0.50f32 * mean);
+    (
+        crate::numerics::nint_f32(10000.0f32 * mean),
+        crate::numerics::nint_f32(10000.0f32 * sigma),
+    )
 }
 
 // ---------------------------------------------------------------------------
@@ -193,17 +197,21 @@ fn fitz95(
 ///
 /// r1, r2 are int16 distance values (distance * 100).
 #[inline]
-fn scorefun95(r1: i16, r2: i16) -> f64 {
-    let r = (r1 as f64 + r2 as f64) / 200.0;
-    let s = (r1 as f64 - r2 as f64) / 100.0;
-    if r > 0.01 {
-        (0.20 - s.abs() / r) * (-r * r / 400.0).exp()
+fn scorefun95(r1: i16, r2: i16) -> f32 {
+    // comparemodules.f scorefun95, in REAL: r=float(r1+r2)/200.0 with r1+r2
+    // evaluated in integer*2, so it wraps above 32767 (gfortran -O3 gives
+    // 20000+20000 -> -25536); such pairs take the r<=0.01 branch and score 0.20.
+    let r = r1.wrapping_add(r2) as f32 / 200.0f32;
+    let s = r1.wrapping_sub(r2) as f32 / 100.0f32;
+    if r > 0.01f32 {
+        (0.20f32 - s.abs() / r) * (-r * r / 400.0f32).exp()
     } else {
-        0.20
+        0.20f32
     }
 }
 
-/// Compute total score from alignment and distance matrices.
+/// Compute total score from alignment and distance matrices (REAL accumulation,
+/// in comparemodules.f gettotscore95's loop order).
 ///
 /// ali is nres1-length, ali[i] > 0 means residue i (0-based) aligns to
 /// cd2 residue ali[i] (1-based).
@@ -213,12 +221,12 @@ fn gettotscore95(
     nres1: usize,
     d2: &Array2<i16>,
     nres2: usize,
-) -> f64 {
+) -> f32 {
     let aligned: Vec<usize> = (0..nres1.min(ali.len()))
         .filter(|&i| ali[i] > 0)
         .collect();
 
-    let mut totscore = 0.0;
+    let mut totscore = 0.0f32;
     for &k in &aligned {
         for &l in &aligned {
             let q = (ali[k].abs() - 1) as usize;
@@ -431,7 +439,7 @@ pub fn run_filter95(
 
         // Score
         let totscore = gettotscore95(&tmpali, &dm1.data, p1.nres, &dm2.data, p2.nres);
-        let xscore = nint(10000.0 * totscore);
+        let xscore = crate::numerics::nint_f32(10000.0f32 * totscore);
 
         let mut final_score = hit.score;
         let mut final_nseg = nseg;
@@ -472,7 +480,7 @@ pub fn run_filter95(
 
         // Z-score
         let (mean_int, sigma_int) = di.minscore.get(&hit.idom).copied().unwrap_or((0, 1));
-        let zscore = (final_score - mean_int) as f64 / sigma_int as f64;
+        let zscore = ((final_score - mean_int) as f32 / sigma_int as f32) as f64;
 
         if zscore < zcut {
             continue;

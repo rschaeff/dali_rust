@@ -71,7 +71,7 @@ fn pipenbest() -> usize {
 ///
 /// Flattens AlignmentBlocks into the values array that `convert_prealignment`
 /// expects: values[0..2*nblock] = cd1 (l1,r1) pairs, values[2*nblock..4*nblock] = cd2 (l2,r2) pairs.
-fn dccp_to_dalicon_record(entry: &DccpEntry) -> DaliconRecord {
+pub fn dccp_to_dalicon_record(entry: &DccpEntry) -> DaliconRecord {
     let nblock = entry.blocks.len();
     let mut values = Vec::with_capacity(nblock * 4);
     // cd1 ranges
@@ -98,7 +98,7 @@ fn dccp_to_dalicon_record(entry: &DccpEntry) -> DaliconRecord {
 /// - Sort by zscore descending
 /// - Keep top `nbest` per (cd1+cd2) key
 /// - Filter by z-score cutoff
-fn filter95_to_dalicon_records(
+pub fn filter95_to_dalicon_records(
     entries: &[Filter95Entry],
     zcut: f64,
     nbest: usize,
