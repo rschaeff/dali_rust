@@ -41,7 +41,12 @@ pub const INFINIT: i32 = 10_000_000;
 pub const NUL: i32 = -99;
 pub const BOXDIM: usize = 501;
 pub const BL: usize = 10;
-pub const STARTSIZE: usize = 3;
+/// setldom threshold. comparemodules.f declares `integer startsize` and never
+/// assigns it; in the DaliLite binary it is 0 (checked by printing it from an
+/// instrumented build), so every node of the domain tree is aligned and parents
+/// search only their children's saved placements. 3 looked intended but is not
+/// what DaliLite does.
+pub const STARTSIZE: usize = 0;
 pub const LENE: usize = 6;
 pub const LENH: usize = 8;
 
@@ -106,10 +111,16 @@ pub fn dowork_parsi(
     if need_new {
         let path1 = format!("{}/{}.dat", dat_dir1, cd1);
         let mut p1 = match parsireadproteindata(&path1) {
-            Some(p) => p,
-            None => return output_hits,
+            Ok(p) => p,
+            Err(e) => {
+                eprintln!("PARSI: cannot read {}: {}", path1, e);
+                return output_hits;
+            }
         };
 
+        // Fortran getprotein1 runs treehack before this check, so a tree with
+        // multi-SSE leaves is expanded first and only a genuinely small one fails.
+        treehack(&mut p1);
         if p1.nseg <= 2 || p1.ndom < p1.nseg {
             return output_hits;
         }
@@ -117,7 +128,6 @@ pub fn dowork_parsi(
             return output_hits;
         }
 
-        treehack(&mut p1);
         compressca(&mut p1);
         if p1.nres == 0 {
             return output_hits;
@@ -151,11 +161,16 @@ pub fn dowork_parsi(
     // Phase 2: Load protein 2
     let path2 = format!("{}/{}.dat", dat_dir2, cd2);
     let p2 = match parsireadproteindata(&path2) {
-        Some(p) => p,
-        None => return output_hits,
+        Ok(p) => p,
+        Err(e) => {
+            eprintln!("PARSI: cannot read {}: {}", path2, e);
+            return output_hits;
+        }
     };
 
-    if p2.nres == 0 {
+    // Fortran getsequence: nres2 > maxres2 is fatal for the pair (and the
+    // candidate arrays here are sized for MAXRES2 / BL starts).
+    if p2.nres == 0 || p2.nres > MAXRES2 {
         return output_hits;
     }
     if cache.prot.na * p2.na + cache.prot.nb * p2.nb == 0 {
@@ -183,7 +198,10 @@ pub fn dowork_parsi(
                                         &cache.minseglen, &cache.ngap, BL);
     let ci0 = init_ci_ni(&mi, nseg);
 
-    let string = format!("{:5}{:5}", cd1, cd2);
+    // Tag for the refine lines. Fortran pads to a5,a5; unpadded here, because
+    // parse_refine_line splits on whitespace and a padded short code ("qA   ")
+    // would split the tag and drop every hit.
+    let string = format!("{}{}", cd1, cd2);
 
     let mut output_lines = Vec::new();
     align(

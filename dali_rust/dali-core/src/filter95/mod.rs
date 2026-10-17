@@ -17,10 +17,8 @@ use ndarray::Array2;
 
 use crate::types::{NodeType, Protein, ParsiHit, DistMatScale100};
 use crate::store::ProteinStore;
-use crate::numerics::rounding::nint;
-use crate::numerics::kabsch::{u3b, transrotate};
-use crate::numerics::nw::{filltable_maxsim, nw_maxsim};
-use crate::numerics::fitz::FitzResult;
+use crate::numerics::kabsch::transrotate_f32;
+use crate::numerics::fitz::{fitz, getut_f32};
 
 /// FILTER95 output entry.
 #[derive(Debug, Clone)]
@@ -76,113 +74,14 @@ fn extract_domain_info(prot: &Protein) -> Cd1DomainInfo {
 ///
 /// Returns (nint(10000*mean), nint(10000*sigma)).
 fn compute_minscore(node_size: usize) -> (i32, i32) {
-    let x = (node_size as f64).min(400.0);
-    let mean = 7.9494 + 0.70852 * x + 2.5895e-4 * x * x - 1.9156e-6 * x * x * x;
-    let sigma = 1.0_f64.max(0.50 * mean);
-    (nint(10000.0 * mean), nint(10000.0 * sigma))
-}
-
-// ---------------------------------------------------------------------------
-// Superposition
-// ---------------------------------------------------------------------------
-
-/// Compute rotation/translation from alignment and apply to x.
-fn getut_and_transform(x: &mut Array2<f64>, y: &Array2<f64>, ali: &[i32]) {
-    let nx = x.ncols();
-    let pairs: Vec<(usize, usize)> = (0..nx)
-        .filter(|&i| ali[i] >= 0)
-        .map(|i| (i, ali[i] as usize))
-        .collect();
-    let lali = pairs.len();
-
-    if lali == 0 {
-        return;
-    }
-
-    let mut ux = Array2::zeros((3, lali));
-    let mut uy = Array2::zeros((3, lali));
-    let w = vec![1.0; lali];
-
-    for (k, &(i, j)) in pairs.iter().enumerate() {
-        for dim in 0..3 {
-            ux[[dim, k]] = x[[dim, i]];
-            uy[[dim, k]] = y[[dim, j]];
-        }
-    }
-
-    let result = u3b(&w, &ux, &uy, lali, 1);
-    transrotate(x, &result.u, &result.t);
-}
-
-/// Iterative superposition refinement with initial alignment.
-///
-/// Unlike numerics::fitz which starts with ali=all -1, this takes
-/// an initial alignment and checks convergence against it on the
-/// first iteration. Matches Fortran fitz() which takes ali as in-out.
-fn fitz95(
-    x: &mut Array2<f64>,
-    y: &Array2<f64>,
-    ali_init: &[i32],
-    rcut: f64,
-    maxiter: usize,
-) -> FitzResult {
-    let nx = x.ncols();
-    let ny = y.ncols();
-
-    if nx < 1 || ny < 1 {
-        return FitzResult {
-            ali: vec![-1; nx],
-            rms: 0.0,
-            lali: 0,
-            niter: 0,
-        };
-    }
-
-    let mut ali = ali_init.to_vec();
-    let mut rms = 0.0;
-    let mut lali = 0usize;
-    let mut niter = 0usize;
-    let mut frozen = false;
-
-    while niter < maxiter && !frozen {
-        niter += 1;
-
-        let table0 = filltable_maxsim(x, y, rcut);
-        let ali_old = ali.clone();
-        let (_score, new_ali) = nw_maxsim(nx, ny, &table0);
-        ali = new_ali;
-
-        frozen = ali == ali_old;
-
-        // Superpose
-        let pairs: Vec<(usize, usize)> = (0..nx)
-            .filter(|&i| ali[i] >= 0)
-            .map(|i| (i, ali[i] as usize))
-            .collect();
-        lali = pairs.len();
-
-        if lali > 0 {
-            let mut ux = Array2::zeros((3, lali));
-            let mut uy = Array2::zeros((3, lali));
-            let w = vec![1.0; lali];
-            for (k, &(i, j)) in pairs.iter().enumerate() {
-                for dim in 0..3 {
-                    ux[[dim, k]] = x[[dim, i]];
-                    uy[[dim, k]] = y[[dim, j]];
-                }
-            }
-            let result = u3b(&w, &ux, &uy, lali, 1);
-            rms = (result.rms / lali.max(1) as f64).sqrt();
-            transrotate(x, &result.u, &result.t);
-        }
-    }
-
-    FitzResult {
-        ali,
-        rms,
-        lali,
-        niter,
-    }
+    // REAL arithmetic, as in comparemodules.f
+    let x = (node_size as f32).min(400.0f32);
+    let mean = 7.9494f32 + 0.70852f32 * x + 2.5895e-4f32 * x * x - 1.9156e-6f32 * x * x * x;
+    let sigma = 1.0f32.max(0.50f32 * mean);
+    (
+        crate::numerics::nint_f32(10000.0f32 * mean),
+        crate::numerics::nint_f32(10000.0f32 * sigma),
+    )
 }
 
 // ---------------------------------------------------------------------------
@@ -193,17 +92,21 @@ fn fitz95(
 ///
 /// r1, r2 are int16 distance values (distance * 100).
 #[inline]
-fn scorefun95(r1: i16, r2: i16) -> f64 {
-    let r = (r1 as f64 + r2 as f64) / 200.0;
-    let s = (r1 as f64 - r2 as f64) / 100.0;
-    if r > 0.01 {
-        (0.20 - s.abs() / r) * (-r * r / 400.0).exp()
+fn scorefun95(r1: i16, r2: i16) -> f32 {
+    // comparemodules.f scorefun95, in REAL: r=float(r1+r2)/200.0 with r1+r2
+    // evaluated in integer*2, so it wraps above 32767 (gfortran -O3 gives
+    // 20000+20000 -> -25536); such pairs take the r<=0.01 branch and score 0.20.
+    let r = r1.wrapping_add(r2) as f32 / 200.0f32;
+    let s = r1.wrapping_sub(r2) as f32 / 100.0f32;
+    if r > 0.01f32 {
+        (0.20f32 - s.abs() / r) * (-r * r / 400.0f32).exp()
     } else {
-        0.20
+        0.20f32
     }
 }
 
-/// Compute total score from alignment and distance matrices.
+/// Compute total score from alignment and distance matrices (REAL accumulation,
+/// in comparemodules.f gettotscore95's loop order).
 ///
 /// ali is nres1-length, ali[i] > 0 means residue i (0-based) aligns to
 /// cd2 residue ali[i] (1-based).
@@ -213,12 +116,12 @@ fn gettotscore95(
     nres1: usize,
     d2: &Array2<i16>,
     nres2: usize,
-) -> f64 {
+) -> f32 {
     let aligned: Vec<usize> = (0..nres1.min(ali.len()))
         .filter(|&i| ali[i] > 0)
         .collect();
 
-    let mut totscore = 0.0;
+    let mut totscore = 0.0f32;
     for &k in &aligned {
         for &l in &aligned {
             let q = (ali[k].abs() - 1) as usize;
@@ -369,11 +272,11 @@ pub fn run_filter95(
         }
 
         // Build fresh xca from ca (always rebuilt)
-        let mut xca = Array2::<f64>::zeros((3, nx));
+        let mut xca = Array2::<f32>::zeros((3, nx));
         for k in 0..nx {
             let res_idx = resix[k] - 1; // 0-based for ca
             for dim in 0..3 {
-                xca[[dim, k]] = p1.ca[[dim, res_idx]];
+                xca[[dim, k]] = p1.ca[[dim, res_idx]] as f32;
             }
         }
 
@@ -401,20 +304,24 @@ pub fn run_filter95(
             if cd1_start > 0 {
                 for j in cd1_start..=cd1_end {
                     if let Some(&l) = xiser.get(&(j as usize)) {
-                        if l > 0 && l <= nx {
+                        let k = cd2_start + j - cd1_start - 1;
+                        // Out-of-range k cannot come from a valid PARSI hit; ignore it
+                        // rather than index past cd2 (Fortran would read garbage).
+                        if l > 0 && l <= nx && k >= 0 && (k as usize) < p2.nres {
                             // 0-based domain-local index -> 0-based cd2 residue
-                            fitzali[l - 1] = cd2_start + j - cd1_start - 1;
+                            fitzali[l - 1] = k;
                         }
                     }
                 }
             }
         }
 
-        // getut + transrotate: initial superposition
-        getut_and_transform(&mut xca, &p2.ca, &fitzali);
-
-        // fitz95: iterative refinement with initial alignment
-        let fitz_result = fitz95(&mut xca, &p2.ca, &fitzali, fitzrcut, fitzmaxiter);
+        // getut + transrotate: initial superposition, then fitz (which
+        // starts from an empty alignment; PARSI's only steers the start)
+        let ca2_32 = p2.ca.mapv(|v| v as f32);
+        let (res, _, _) = getut_f32(&fitzali, &xca, &ca2_32);
+        transrotate_f32(&mut xca, &res.u, &res.t);
+        let fitz_result = fitz(&mut xca, &ca2_32, fitzrcut, fitzmaxiter);
 
         // Map back to full-protein alignment for scoring
         // tmpali: nres1-length, tmpali[i] > 0 means 1-based cd2 residue
@@ -428,7 +335,7 @@ pub fn run_filter95(
 
         // Score
         let totscore = gettotscore95(&tmpali, &dm1.data, p1.nres, &dm2.data, p2.nres);
-        let xscore = nint(10000.0 * totscore);
+        let xscore = crate::numerics::nint_f32(10000.0f32 * totscore);
 
         let mut final_score = hit.score;
         let mut final_nseg = nseg;
@@ -469,7 +376,7 @@ pub fn run_filter95(
 
         // Z-score
         let (mean_int, sigma_int) = di.minscore.get(&hit.idom).copied().unwrap_or((0, 1));
-        let zscore = (final_score - mean_int) as f64 / sigma_int as f64;
+        let zscore = ((final_score - mean_int) as f32 / sigma_int as f32) as f64;
 
         if zscore < zcut {
             continue;

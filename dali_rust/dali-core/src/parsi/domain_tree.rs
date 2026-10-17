@@ -16,17 +16,20 @@ pub fn setldom(ndom: usize, domns: &[i32]) -> Vec<bool> {
 
 /// Initialize search space: enumerate candidate residues for each segment.
 ///
-/// For each segment, candidates are:
-/// 1. Residues in protein 2 at bl-residue steps
-/// 2. N-terminal gap residues (negative indices down to -29)
-/// 3. NUL candidate (unaligned)
+/// Port of parsi-align.f init_searchspace (non-prealigned branch; lpreali is a
+/// .false. parameter in comparemodules.f). Per segment, in this order:
+/// 1. N-terminal gap starts: `ires=1; do i=ngap,1,-1: ires=ires-i*bl` -- the
+///    decrement is CUMULATIVE, so ngap=2 gives -19,-29 and ngap=3 gives -29,-49,-59
+///    (starts below -29 can never score; they still occupy candidate slots)
+/// 2. Residues in protein 2 at bl-residue steps
+/// 3. NUL (lnul is .true.)
 ///
 /// Returns (trans, mi) where:
 ///   trans: flat [max_cand * nseg], indexed [ir * nseg + iseg]
-///   mi: [nseg] — number of candidates per segment
+///   mi: [nseg] -- number of candidates per segment
 pub fn init_searchspace(
-    nseg: usize, nres2: usize, segmentrange: &[i32],
-    minseglen: &[i32], ngap: &[i32], bl: usize,
+    nseg: usize, nres2: usize, _segmentrange: &[i32],
+    _minseglen: &[i32], ngap: &[i32], bl: usize,
 ) -> (Vec<i32>, Vec<i32>) {
     let max_cand = MAXRES0;
     let mut trans = vec![NUL; max_cand * nseg];
@@ -34,30 +37,26 @@ pub fn init_searchspace(
 
     for iseg in 0..nseg {
         let mut ir: usize = 0;
+        let mut push = |trans: &mut Vec<i32>, ir: &mut usize, v: i32| {
+            if *ir < max_cand {
+                trans[*ir * nseg + iseg] = v;
+                *ir += 1;
+            }
+        };
 
-        // Regular candidates: step through protein 2 at bl intervals
         let mut ires = 1i32;
-        while ires <= nres2 as i32 {
-            if ir >= max_cand { break; }
-            trans[ir * nseg + iseg] = ires;
-            ir += 1;
-            ires += bl as i32;
+        let mut i = ngap[iseg];
+        while i >= 1 {
+            ires -= i * bl as i32;
+            push(&mut trans, &mut ir, ires);
+            i -= 1;
         }
-
-        // N-terminal gap candidates
-        for igap in 1..=ngap[iseg] {
-            if ir >= max_cand { break; }
-            let mut gapres = 1 - igap * bl as i32;
-            if gapres < -29 { gapres = -29; }
-            trans[ir * nseg + iseg] = gapres;
-            ir += 1;
+        let mut r = 1i32;
+        while r <= nres2 as i32 {
+            push(&mut trans, &mut ir, r);
+            r += bl as i32;
         }
-
-        // NUL candidate
-        if ir < max_cand {
-            trans[ir * nseg + iseg] = NUL;
-            ir += 1;
-        }
+        push(&mut trans, &mut ir, NUL);
 
         mi[iseg] = ir as i32;
     }

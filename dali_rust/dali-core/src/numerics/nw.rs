@@ -1,9 +1,10 @@
 use ndarray::Array2;
 
-/// Build similarity score matrix for NW alignment.
+/// Build similarity score matrix for NW alignment (subfitzfast.f
+/// filltable_maxsim, REAL distance_real).
 ///
-/// score[i,j] = max(0, nint((rcut - dist(x[:,i], y[:,j])) * 10))
-pub fn filltable_maxsim(x: &Array2<f64>, y: &Array2<f64>, rcut: f64) -> Array2<i16> {
+/// score[i,j] = nint((rcut - dist(x[:,i], y[:,j])) * 10) if dist < rcut, else 0
+pub fn filltable_maxsim(x: &Array2<f32>, y: &Array2<f32>, rcut: f32) -> Array2<i16> {
     let nx = x.ncols();
     let ny = y.ncols();
     let mut table = Array2::zeros((nx, ny));
@@ -15,11 +16,7 @@ pub fn filltable_maxsim(x: &Array2<f64>, y: &Array2<f64>, rcut: f64) -> Array2<i
             let dz = x[[2, i]] - y[[2, j]];
             let r = (dx * dx + dy * dy + dz * dz).sqrt();
             if r < rcut {
-                // Use Rust's f64::round() which matches rint() for this usage
-                let s = ((rcut - r) * 10.0).round() as i16;
-                if s > 0 {
-                    table[[i, j]] = s;
-                }
+                table[[i, j]] = super::rounding::nint_f32((rcut - r) * 10.0f32) as i16;
             }
         }
     }
@@ -76,8 +73,12 @@ pub fn nw_maxsim(m: usize, n: usize, table0: &Array2<i16>) -> (i32, Vec<i32>) {
         let k0 = if y0 > n { y0 - n } else { 0 };
         let k1 = (m - 1).min(y0 - 1);
 
-        if k0 == k1 {
-            // Single cell on this anti-diagonal — check all available options
+        // A single-cell anti-diagonal (k0 == k1) is NOT special in Fortran:
+        // the x==1 edge assignment (trace 2) is overwritten by the y==1 edge
+        // assignment (trace 1). At the (m,n) corner this means the last
+        // residue of x is never aligned. Only m == 1 (k1 == 0, where Fortran
+        // reads shift(diag1,-1) out of bounds) keeps the old evaluation.
+        if k0 == k1 && k1 == 0 {
             let x = 1 + k0;
             let y = y0 - k0;
             if x <= m && y >= 1 && y <= n {
@@ -207,17 +208,16 @@ mod tests {
     #[test]
     fn test_nw_maxsim_identity() {
         // 3x3 identity-like table: diagonal = 40, off-diagonal = 0.
-        // Fortran/Python behavior: trace[1,1]=0, so cell (1,1) is never aligned
-        // during backtracking. Only cells (2,2) and (3,3) get aligned.
+        // subfitzfast.f (compiled with gfortran -O3) gives score 40, ali 0 2 0:
+        // trace(1,1)=0 stops the backtrack, and the (m,n) corner's trace is
+        // overwritten to 1 by the y==1/x==m edge rule, so only (2,2) aligns.
         let table = array![
             [40i16, 0,  0],
             [0,    40,  0],
             [0,     0, 40],
         ];
         let (score, ali) = nw_maxsim(3, 3, &table);
-        assert_eq!(ali[0], -1); // cell (1,1) not aligned (Fortran behavior)
-        assert_eq!(ali[1], 1);
-        assert_eq!(ali[2], 2);
-        assert_eq!(score, 80);
+        assert_eq!(ali, vec![-1, 1, -1]);
+        assert_eq!(score, 40);
     }
 }

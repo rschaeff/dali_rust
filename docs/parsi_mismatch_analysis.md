@@ -1,5 +1,18 @@
 # PARSI Mismatch Analysis
 
+> **Superseded 2026-10-16.** The conclusion below -- that the residual is heuristic
+> search divergence from +-1 score-table differences -- was wrong. Tracing the first
+> divergent state in instrumented builds of both implementations found porting
+> differences, each now fixed on branch `fix/parsi-dat-roundtrip`:
+> treehack stride and ordering, search-space order and N-gap starts, `startsize`
+> (uninitialised in comparemodules.f, 0 in the binary), loadstack (ia1=0, budget
+> branches, selectcand abort), the stack's tie order / storage order / word capacity,
+> getemax (`ran` is the gfortran intrinsic: 0.662), split with n1=0, flag 4, and a
+> declump that broke get_estimate's sorted-ci assumption. Rust PARSI now reproduces
+> every refine line of DaliLite on both fixture corpora: 435/435 and the full 18x18
+> all-against-all, 13,515/13,515.
+
+
 **Date:** 2026-02-13
 
 ## Summary

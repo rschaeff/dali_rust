@@ -7,6 +7,15 @@
 
 ## Executive Summary
 
+> **Superseded in part, 2026-10-13.** The closing claim below — that the residual
+> hit-count gap is "inherent search divergence... documented at 78-87% match rate" — does
+> not survive measurement at ECOD70 scale. Template recall over 9,087 proteins and 48,385
+> templates is **0.375**, not 0.78-0.87, and end-to-end it costs 17% of proteins their
+> entire DPAM domain call. The `.dat` bypass added for Deficiency 2 does **not** recover
+> it. See `DEFICIENCY_SEARCH_SENSITIVITY.md`. Deficiencies 1, 3 and 4 below stand as
+> written.
+
+
 Integration testing of the Rust DALI backend (`dali.align_pdb()`) into DPAM's
 step 07 pipeline revealed four deficiencies. All four have been resolved:
 

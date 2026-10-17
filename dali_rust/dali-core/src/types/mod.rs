@@ -23,6 +23,10 @@ pub struct SearchHit {
     pub translation: Array1<f64>,
     pub alignments: Vec<(usize, usize)>,  // (query_1based, template_1based)
     pub round: usize,
+    /// PDB residue number of the query residue in each alignment pair
+    pub query_resids: Vec<i32>,
+    /// residues in this round's query
+    pub qlen: usize,
 }
 
 /// Minimum helix length for segment reconstruction (matches io/secstr.rs LENH).

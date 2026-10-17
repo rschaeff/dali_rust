@@ -14,7 +14,7 @@ use spatial_hash::SpatialHashGrid;
 use compare::compare;
 
 /// Constants matching Fortran serialcompare.f
-const RCUT_FITZ: f64 = 4.0;
+const RCUT_FITZ: f32 = 4.0;
 const MAXITER: usize = 20;
 const NEIBORCUTOFF: f64 = 12.0;
 
@@ -179,6 +179,9 @@ pub fn wolf_compare(
     }
 
     // Iterative alignment refinement
+    // fitz runs in REAL, as in Fortran
+    let mut xca = xca.mapv(|v: f64| v as f32);
+    let yca = yca.mapv(|v: f64| v as f32);
     let fitz_result = fitz(&mut xca, &yca, RCUT_FITZ, MAXITER);
 
     // Convert alignment to blocks (1-based residue indices)

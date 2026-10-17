@@ -8,6 +8,7 @@ name = "dali"
 crate-type = ["cdylib"]
 
 [dependencies]
+flate2 = "1"
 dali-core = { path = "../dali-core" }
 pyo3 = { version = "0.23", features = ["extension-module"] }
 numpy = "0.23"

@@ -101,7 +101,8 @@ impl ProteinStore {
                 let dy = yi - prot.ca[[1, j]] as f32;
                 let dz = zi - prot.ca[[2, j]] as f32;
                 let dist = (dx * dx + dy * dy + dz * dz).sqrt();
-                let x = crate::numerics::nint_f32(hundred * dist).min(32767);
+                // integer*2 assignment wraps (gfortran: 400.12 A -> -25524), no clamp
+                let x = crate::numerics::nint_f32(hundred * dist);
                 data[[i, j]] = x as i16;
                 data[[j, i]] = x as i16;
             }

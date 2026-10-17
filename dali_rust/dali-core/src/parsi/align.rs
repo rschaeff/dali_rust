@@ -102,8 +102,10 @@ pub fn align(
                      domns, domseglist, alloc, &mut start, nseg);
         }
 
-        // update_ex: compute scores for new segment pairs
-        update_ex(
+        // update_ex: compute scores for new segment pairs. On a fatal condition
+        // (segment > 100 residues) Fortran sets lskipflag and align returns: the
+        // rest of this pair is skipped, hits already written are kept.
+        if !update_ex(
             &mi_w, &trans_w, nseg,
             upper, lower, nseg, segmentrange,
             idom, domns, domseglist, alloc,
@@ -113,7 +115,9 @@ pub fn align(
             BL, &mut start, &mut lexdone, lseqtl,
             &mut s_beg, s_beg_stride, &mut s_end, s_end_stride,
             dist1sum, dist1sum_stride, minseglen, scoretable,
-        );
+        ) {
+            return;
+        }
 
         // Get initial estimate
         let (ess_init, est_init) = get_ess(ns, &seglist, &mi_w, &ci0_w, nseg,
@@ -139,10 +143,13 @@ pub fn align(
             let mut pstack = PriorityStack::new(ns, &seglist, &mi_w, nseg);
 
             // loadstack: initialize priority queue from child alignments
-            loadstack(&mut pstack, &ali_start, &ali_nali, &ali_save,
+            if !loadstack(&mut pstack, &ali_start, &ali_nali, &ali_save,
                       &mi_w, &ci0_w, &trans_w, nseg, idom, domns, domseglist, alloc,
                       &ex, &start, lfix, idom1, idom2, ns, &seglist,
-                      cut_w[idom], lseqtl, lnul);
+                      cut_w[idom], lseqtl, lnul) {
+                return; // lskipflag
+            }
+            if pstack.aborted { return; }
 
             // Memory for degenerate detection
             let mut alimem: HashMap<Vec<i32>, bool> = HashMap::new();
@@ -157,6 +164,7 @@ pub fn align(
                     segmentrange0, string, outputunit_lines, false);
                 flag = f;
 
+                if flag == 6 { return; } // lskipflag: abandon the pair
                 if flag != 5 { break; }
 
                 let est10 = est;
@@ -165,6 +173,7 @@ pub fn align(
                 // declump: remove found alignment from stack
                 declump(&mut pstack, cut_w[idom], ns, &seglist, &mi_w, &ali,
                         &ex, &start, est10, &trans_w, lseqtl);
+                if pstack.aborted { return; }
 
                 // Check degenerate
                 let ali_key: Vec<i32> = seglist.iter()
@@ -257,21 +266,19 @@ fn dostack(
             1 => return (flag, est, ali, ali1),  // empty stack
             2 => return (flag, est, ali, ali1),  // below cutoff
             3 => {
-                // overflow: clearstack, remove bottom 90%
-                if pstack.size() <= 1 {
-                    return (4, est, ali, ali1);
+                // Fortran dostack overflow: cut at the estimate top/chunk/10 list
+                // steps below the best and keep only strictly better chunks.
+                if pstack.top() == 1 {
+                    return (4, est, ali, ali1); // 'BUG in dostack'
                 }
-                let idx_10pct = pstack.size() / 10;
-                if idx_10pct < pstack.size() {
-                    // Find the cutoff estimate at the 10th percentile boundary
-                    let mut ests: Vec<i32> = pstack.states.iter().map(|s| s.est).collect();
-                    let k_idx = ests.len() - idx_10pct - 1;
-                    ests.select_nth_unstable(k_idx);
-                    pstack.clearstack(ests[k_idx]);
+                let steps = (pstack.top() / pstack.chunk as i64 / 10) as usize;
+                if let Some(cut) = pstack.est_at_rank(steps) {
+                    pstack.clearstack(cut);
                 }
                 continue;
             }
-            4 => continue,  // no candidates
+            4 => return (flag, est, ali, ali1),  // 'no candidates': ends the domain
+            6 => return (flag, est, ali, ali1),  // lskipflag
             5 => {
                 // unique alignment — convert to real residue numbers
                 for is_ in 0..ns {
@@ -398,15 +405,15 @@ fn output2(
             if lseqtl && trans[jres as usize * nseg + jseg] < trans[ires as usize * nseg + iseg] {
                 continue;
             }
-            let ii_idx = (iistart + ires) as usize;
-            let jj_idx = (jjstart + jres) as usize;
-            let ij_idx = (iwhere + jres) as usize;
-            if ii_idx >= EXDIM || jj_idx >= EXDIM || ij_idx >= EXDIM {
+            // Fortran's HACK bound: jjstart+jres or iwhere+jres beyond exdim.
+            // A negative iwhere (no ij block, start(iseg,jseg) < 0) passes it
+            // and simply contributes no pair term.
+            if jjstart + jres >= EXDIM as i32 || iwhere + jres >= EXDIM as i32 {
                 continue;
             }
-            let mut x = ex[ii_idx] + ex[jj_idx];
+            let mut x = ex[(iistart + ires) as usize] + ex[(jjstart + jres) as usize];
             if iwhere >= 0 {
-                x += ex[ij_idx];
+                x += ex[(iwhere + jres) as usize];
             }
             if x > cut {
                 ali[iseg] = ires;
@@ -669,7 +676,16 @@ fn compress(
     *laststart = new_laststart;
 }
 
-/// Initialize priority queue from child alignments.
+/// Port of parsi-align.f loadstack. Returns false on Fortran's lskipflag
+/// (selectcand could not find a saved placement among the candidates), in which
+/// case align abandons the rest of the protein pair.
+///
+/// Three branches by stack budget, chunk = setchunk = 1 + (sum mi + 30)/31:
+///   chunk*ia1*ia2 < MAXSTACK: every (child-1 alignment, child-2 alignment) pair
+///   else chunk*ia1 < MAXSTACK: child-1 alignments only
+///   else: the unrestricted search space as one state
+/// ia1 = ali_nali(idom1) when more than one segment of child 1 is fixed (else 1);
+/// it can be 0 -- a child that saved no alignment -- and then nothing is pushed.
 fn loadstack(
     pstack: &mut PriorityStack,
     ali_start: &[i32], ali_nali: &[i32], ali_save: &[i32],
@@ -679,42 +695,37 @@ fn loadstack(
     lfix: &[bool], idom1: usize, idom2: usize,
     ns: usize, seglist: &[usize], cutoff: i32,
     lseqtl: bool, lnul: bool,
-) {
+) -> bool {
+    let _ = (trans_stride, idom);
     let nseg = mi.len();
     let lfix_stride = alloc;  // lfix indexed as [iseg * alloc + idom]
 
-    // Get fixed segments from children
-    let mut slist = Vec::new();
-    let mut tlist = Vec::new();
-    if idom1 > 0 {
-        for is_ in 0..domns[idom1] as usize {
-            let iseg_1 = domseglist[is_ * alloc + idom1] as usize;
-            if iseg_1 >= 1 {
-                let idx = (iseg_1 - 1) * lfix_stride + idom1;
-                if idx < lfix.len() && lfix[idx] {
-                    slist.push(is_);
+    // shortlist_lfix: fixed segments of each child (positions within the child)
+    let shortlist = |child: usize| -> Vec<usize> {
+        let mut v = Vec::new();
+        if child > 0 {
+            for is_ in 0..domns[child] as usize {
+                let iseg_1 = domseglist[is_ * alloc + child] as usize;
+                if iseg_1 >= 1 {
+                    let idx = (iseg_1 - 1) * lfix_stride + child;
+                    if idx < lfix.len() && lfix[idx] {
+                        v.push(is_);
+                    }
                 }
             }
         }
-    }
-    if idom2 > 0 {
-        for is_ in 0..domns[idom2] as usize {
-            let iseg_1 = domseglist[is_ * alloc + idom2] as usize;
-            if iseg_1 >= 1 {
-                let idx = (iseg_1 - 1) * lfix_stride + idom2;
-                if idx < lfix.len() && lfix[idx] {
-                    tlist.push(is_);
-                }
-            }
-        }
-    }
-
+        v
+    };
+    let slist = shortlist(idom1);
+    let tlist = shortlist(idom2);
     let nali1 = slist.len();
     let nali2 = tlist.len();
-    let ia1 = if nali1 > 1 { ali_nali[idom1].max(1) as usize } else { 1 };
-    let ia2 = if nali2 > 1 { ali_nali[idom2].max(1) as usize } else { 1 };
+    let ia1: i64 = if nali1 > 1 { ali_nali[idom1] as i64 } else { 1 };
+    let ia2: i64 = if nali2 > 1 { ali_nali[idom2] as i64 } else { 1 };
+    let chunk: i64 = 1 + (seglist.iter().map(|&g| mi[g] as i64).sum::<i64>() + 30) / 31;
+    let maxstack = super::MAXSTACK as i64;
 
-    // Build initial search space
+    // copy mi,ci0 to work arrays
     let mut ni_work = vec![0i32; nseg];
     let mut ci_work = vec![0i32; MAXRES0 * nseg];
     for is_ in 0..ns {
@@ -725,70 +736,72 @@ fn loadstack(
         }
     }
 
-    for iali in 0..ia1 {
-        // Set fixed segments from child 1
-        if nali1 > 1 {
-            for k in 0..nali1 {
-                let iseg_1 = domseglist[slist[k] * alloc + idom1] as usize;
-                let iseg = iseg_1 - 1;
-                ni_work[iseg] = 0;
-                let save_idx = ali_start[idom1] as usize
-                    + iali * domns[idom1] as usize + slist[k] + 1;
-                if save_idx < ali_save.len() {
-                    let l = ali_save[save_idx];
-                    if l != NUL {
-                        selectcand(l, iseg, trans, &mut ni_work, &mut ci_work, mi, nseg);
-                    }
-                    if lnul {
-                        selectcand(NUL, iseg, trans, &mut ni_work, &mut ci_work, mi, nseg);
-                    }
-                }
+    // Overwrite child `child`'s fixed segments with its saved alignment `iali`.
+    let fix = |child: usize, list: &[usize], iali: usize,
+               ni_work: &mut Vec<i32>, ci_work: &mut Vec<i32>| -> bool {
+        for &k in list {
+            let iseg = domseglist[k * alloc + child] as usize - 1;
+            ni_work[iseg] = 0;
+            let save_idx = ali_start[child] as usize + iali * domns[child] as usize + k + 1;
+            let l = ali_save.get(save_idx).copied().unwrap_or(NUL);
+            if l != NUL && !selectcand(l, iseg, trans, ni_work, ci_work, mi, nseg) {
+                return false;
+            }
+            if lnul && !selectcand(NUL, iseg, trans, ni_work, ci_work, mi, nseg) {
+                return false;
             }
         }
+        true
+    };
 
-        for jali in 0..ia2 {
-            // Set fixed segments from child 2
-            if nali2 > 1 {
-                for k in 0..nali2 {
-                    let iseg_1 = domseglist[tlist[k] * alloc + idom2] as usize;
-                    let iseg = iseg_1 - 1;
-                    ni_work[iseg] = 0;
-                    let save_idx = ali_start[idom2] as usize
-                        + jali * domns[idom2] as usize + tlist[k] + 1;
-                    if save_idx < ali_save.len() {
-                        let l = ali_save[save_idx];
-                        if l != NUL {
-                            selectcand(l, iseg, trans, &mut ni_work, &mut ci_work, mi, nseg);
-                        }
-                        if lnul {
-                            selectcand(NUL, iseg, trans, &mut ni_work, &mut ci_work, mi, nseg);
-                        }
-                    }
-                }
+    let mut push = |pstack: &mut PriorityStack, ni_w: &[i32], ci_w: &[i32]| {
+        let (_, est) = get_ess(ns, seglist, ni_w, ci_w, nseg, ex, start, nseg, mi, trans, nseg, lseqtl);
+        if est > cutoff {
+            let state = pstack.pack(est, ni_w, ci_w, nseg, ns, seglist);
+            pstack.push(state);
+        }
+    };
+
+    if chunk * ia1 * ia2 < maxstack {
+        for iali in 0..ia1.max(0) as usize {
+            if nali1 > 1 && !fix(idom1, &slist, iali, &mut ni_work, &mut ci_work) {
+                return false;
             }
-
-            // Push state
-            let (_, est) = get_ess(ns, seglist, &ni_work, &ci_work, nseg,
-                                    ex, start, nseg, mi, trans, nseg, lseqtl);
-            if est > cutoff {
-                let state = pstack.pack(est, &ni_work, &ci_work, nseg, ns, seglist);
-                pstack.push(state);
+            for jali in 0..ia2.max(0) as usize {
+                if nali2 > 1 && !fix(idom2, &tlist, jali, &mut ni_work, &mut ci_work) {
+                    return false;
+                }
+                push(pstack, &ni_work, &ci_work);
             }
         }
+    } else if chunk * ia1 < maxstack {
+        for iali in 0..ia1.max(0) as usize {
+            if nali1 > 1 && !fix(idom1, &slist, iali, &mut ni_work, &mut ci_work) {
+                return false;
+            }
+            push(pstack, &ni_work, &ci_work);
+        }
+    } else {
+        push(pstack, &ni_work, &ci_work);
     }
+    true
 }
 
+/// selectcand: append candidate `l` of segment iseg to the work list. False if
+/// `l` is not among the candidates (Fortran: 'FATAL ERROR -- selectcand ir
+/// overflow', lskipflag).
 fn selectcand(
     l: i32, iseg: usize, trans: &[i32],
     ni: &mut [i32], ci: &mut [i32], mi: &[i32], nseg: usize,
-) {
+) -> bool {
     for ir in 0..mi[iseg] as usize {
         if trans[ir * nseg + iseg] == l {
             ni[iseg] += 1;
             ci[(ni[iseg] - 1) as usize * nseg + iseg] = ir as i32;
-            return;
+            return true;
         }
     }
+    false
 }
 
 /// Find matching segments in child alignments.
@@ -913,8 +926,9 @@ fn perresiduescore(
         }
     }
 
-    // Compute scores with bl=1 (single residue resolution)
-    update_ex(
+    // Compute scores with bl=1 (single residue resolution). Cannot hit the
+    // seglen > 100 abort: align's update_ex for this domain already passed.
+    let _ok = update_ex(
         &mi_local, &trans_l, nseg,
         upper, lower, nseg, segmentrange,
         idom, domns, domseglist, alloc,

@@ -328,9 +328,19 @@ fn align_pdb(
     let store = ProteinStore::new(&tmp_dir);
     let results = pipeline::compare_pair(&query.code, &template.code, &store);
 
-    // Filter to query→template direction only (blocks l1/r1 refer to query)
-    let q_results: Vec<&DccpEntry> = results.iter()
-        .filter(|r| r.cd1 == query.code && r.cd2 == template.code)
+    // compare_pair runs both directions, as dali.pl pairwise does. Bring the
+    // template→query hits into query orientation (blocks l1/r1 = query) rather
+    // than dropping them.
+    let q_results: Vec<DccpEntry> = results.iter()
+        .filter_map(|r| {
+            if r.cd1 == query.code && r.cd2 == template.code {
+                Some(r.clone())
+            } else if r.cd1 == template.code && r.cd2 == query.code {
+                Some(pipeline::swap_orientation(r))
+            } else {
+                None
+            }
+        })
         .collect();
 
     if q_results.is_empty() {
@@ -449,6 +459,14 @@ impl PySearchHit {
     #[getter]
     fn round(&self) -> usize { self.inner.round }
 
+    /// PDB residue number of the query residue in each alignment pair.
+    #[getter]
+    fn query_resids(&self) -> Vec<i32> { self.inner.query_resids.clone() }
+
+    /// Residues in this round's query (DPAM's qlen).
+    #[getter]
+    fn qlen(&self) -> usize { self.inner.qlen }
+
     fn __repr__(&self) -> String {
         format!("SearchHit(cd2='{}', zscore={:.1}, score={:.1}, rmsd={:.1}, nblock={}, round={})",
                 self.inner.cd2, self.inner.zscore, self.inner.score,
@@ -467,25 +485,31 @@ fn py_mask_protein(protein: &PyProtein, keep_indices: Vec<usize>, new_code: &str
 }
 
 /// One-to-many structural search with query-side amortization.
+///
+/// bothways=True (default) also aligns each target as cd1 against the query and
+/// reports those hits in query orientation, as dali.pl pairwise mode does.
 #[pyfunction]
-#[pyo3(signature = (query, targets, store, z_cut=2.0, skip_wolf=false))]
+#[pyo3(signature = (query, targets, store, z_cut=2.0, skip_wolf=false, bothways=true))]
 fn search_database(
     query: &str,
     targets: Vec<String>,
     store: &PyProteinStore,
     z_cut: f64,
     skip_wolf: bool,
+    bothways: bool,
 ) -> Vec<PyDccpEntry> {
     let refs: Vec<&str> = targets.iter().map(|s| s.as_str()).collect();
-    pipeline::search_database(query, &refs, &store.inner, z_cut, skip_wolf)
+    pipeline::search_database(query, &refs, &store.inner, z_cut, skip_wolf, bothways)
         .into_iter()
         .map(|e| PyDccpEntry { inner: e })
         .collect()
 }
 
 /// Iterative multi-domain detection: search → take best → mask → repeat.
+///
+/// bothways=True (default) searches both directions each round; see search_database.
 #[pyfunction]
-#[pyo3(signature = (query, targets, store, *, min_aligned=20, min_zscore=2.0, gap_tolerance=5, max_rounds=10, skip_wolf=false))]
+#[pyo3(signature = (query, targets, store, *, min_aligned=20, min_zscore=2.0, gap_tolerance=5, max_rounds=10, skip_wolf=false, bothways=true))]
 fn iterative_search(
     query: &str,
     targets: Vec<String>,
@@ -495,15 +519,57 @@ fn iterative_search(
     gap_tolerance: usize,
     max_rounds: usize,
     skip_wolf: bool,
+    bothways: bool,
 ) -> Vec<PySearchHit> {
     let refs: Vec<&str> = targets.iter().map(|s| s.as_str()).collect();
     pipeline::iterative_search(
         query, &refs, &store.inner,
-        min_aligned, min_zscore, gap_tolerance, max_rounds, skip_wolf,
+        min_aligned, min_zscore, gap_tolerance, max_rounds, skip_wolf, bothways,
     )
     .into_iter()
     .map(|h| PySearchHit { inner: h })
     .collect()
+}
+
+/// DPAM step 7 with Fortran semantics: each round re-imports the remaining query
+/// ATOM records (DSSP, PUU, .dat recomputed), takes the best hit, removes the
+/// residues spanned by DPAM's get_domain_range of its aligned residues, repeats.
+#[pyfunction]
+#[pyo3(signature = (query_pdb, targets, store, *, chain="", code="q", min_aligned=20, min_zscore=2.0, min_remaining=20, max_rounds=None, bothways=true))]
+fn iterative_search_pdb(
+    query_pdb: &str,
+    targets: Vec<String>,
+    store: &PyProteinStore,
+    chain: &str,
+    code: &str,
+    min_aligned: usize,
+    min_zscore: f64,
+    min_remaining: usize,
+    max_rounds: Option<usize>,
+    bothways: bool,
+) -> PyResult<Vec<PySearchHit>> {
+    use std::io::Read;
+    let file = std::fs::File::open(query_pdb)
+        .map_err(|e| PyValueError::new_err(format!("{}: {}", query_pdb, e)))?;
+    let mut text = String::new();
+    let r = if query_pdb.ends_with(".gz") {
+        flate2::read::GzDecoder::new(file).read_to_string(&mut text)
+    } else {
+        let mut f = file;
+        f.read_to_string(&mut text)
+    };
+    r.map_err(|e| PyValueError::new_err(format!("{}: {}", query_pdb, e)))?;
+    let refs: Vec<&str> = targets.iter().map(|s| s.as_str()).collect();
+    let params = pipeline::PdbIterParams {
+        min_aligned,
+        min_zscore,
+        min_remaining,
+        max_rounds: max_rounds.unwrap_or(usize::MAX),
+        bothways,
+    };
+    pipeline::iterative_search_pdb(&text, chain, code, &refs, &store.inner, &params)
+        .map(|v| v.into_iter().map(|h| PySearchHit { inner: h }).collect())
+        .map_err(|e| PyValueError::new_err(e.to_string()))
 }
 
 // ── Module definition ─────────────────────────────────────────────
@@ -526,5 +592,6 @@ fn dali(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(py_mask_protein, m)?)?;
     m.add_function(wrap_pyfunction!(search_database, m)?)?;
     m.add_function(wrap_pyfunction!(iterative_search, m)?)?;
+    m.add_function(wrap_pyfunction!(iterative_search_pdb, m)?)?;
     Ok(())
 }

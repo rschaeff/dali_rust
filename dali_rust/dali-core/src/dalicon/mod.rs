@@ -11,8 +11,8 @@
 
 use ndarray::Array2;
 
-use crate::numerics::fitz::fitz;
-use crate::numerics::kabsch::{u3b, transrotate};
+use crate::numerics::fitz::{fitz, getut_f32};
+use crate::numerics::kabsch::transrotate_f32;
 use crate::numerics::rounding::nint;
 use crate::store::ProteinStore;
 use crate::types::{AlignmentBlock, DaliconDistMat};
@@ -23,7 +23,7 @@ use crate::types::{AlignmentBlock, DaliconDistMat};
 
 const REFITOL: f32 = 2000.0;
 const MAXITER: usize = 100;
-const FITZRCUT: f64 = 4.0;
+const FITZRCUT: f32 = 4.0;
 const FITZMAXITER: usize = 10;
 const BLOCKSIZE: usize = 4;
 const IMAX0: usize = 50;
@@ -50,19 +50,12 @@ fn getp(x: f32) -> f32 {
     }
 }
 
-/// Compute Gaussian weight table (f32): w[i] = exp(-0.0025 * i^2).
-/// Thread-safe via OnceLock.
+/// Gaussian weight table w[i] = exp(-0.0025 * i^2) as gagaweights computes it
+/// (vectorized libmvec expf, see numerics::scoring::ENVELOPE_WEIGHT_BITS).
 fn gagaweights() -> &'static [f32; 101] {
     use std::sync::OnceLock;
     static WEIGHTS: OnceLock<[f32; 101]> = OnceLock::new();
-    WEIGHTS.get_or_init(|| {
-        let mut w = [0.0f32; 101];
-        for i in 0..101 {
-            let fi = i as f32;
-            w[i] = (-0.0025f32 * fi * fi).exp();
-        }
-        w
-    })
+    WEIGHTS.get_or_init(crate::numerics::scoring::envelope_weights)
 }
 
 /// DALICON scoring function using precomputed weights.
@@ -101,11 +94,12 @@ pub fn getgagadist(ca: &Array2<f64>, nres: usize) -> DaliconDistMat {
     let mut data = Array2::<i16>::zeros((size, size));
     for i in 1..=nres {
         for j in (i + 1)..=nres {
-            let dx = ca[[0, i - 1]] - ca[[0, j - 1]];
-            let dy = ca[[1, i - 1]] - ca[[1, j - 1]];
-            let dz = ca[[2, i - 1]] - ca[[2, j - 1]];
+            // gagatool.f gagadistance: REAL coordinates and arithmetic
+            let dx = ca[[0, i - 1]] as f32 - ca[[0, j - 1]] as f32;
+            let dy = ca[[1, i - 1]] as f32 - ca[[1, j - 1]] as f32;
+            let dz = ca[[2, i - 1]] as f32 - ca[[2, j - 1]] as f32;
             let dist = (dx * dx + dy * dy + dz * dz).sqrt();
-            let d = nint(10.0 * dist) as i16;
+            let d = crate::numerics::rounding::nint_f32(10.0f32 * dist) as i16;
             data[[i, j]] = d;
             data[[j, i]] = d;
         }
@@ -205,9 +199,14 @@ fn testi(
     for i in 1..=nres1 {
         let k = preali1[i] as i32;
         if k > 0 {
-            let j_lo = 1.max(k - 3) as usize;
-            let j_hi = ((nres2 as i32).min(k + 3)) as usize;
-            for j in j_lo..=j_hi {
+            // testi.f: do j=max(1,k-3),min(nres1-3,k+3) -- bounded by nres1, not
+            // nres2. That is what DaliLite does; when nres1 > nres2 the writes past
+            // column nres2 land in Fortran's static map and are never read (the
+            // tetrapeptide sums only read j <= nres2), so they are skipped here.
+            let j_lo = 1.max(k - 3);
+            let j_hi = (nres1 as i32 - 3).min(k + 3).min(nres2 as i32);
+            if j_lo > j_hi { continue; }
+            for j in j_lo as usize..=j_hi as usize {
                 let idx = i * stride + j;
                 score_vals[idx] = 1.0f32;
                 has_score[idx] = true;
@@ -1174,7 +1173,7 @@ fn lean_mc(
         }
 
         // Accelerate cooling
-        if ntetra > 0 && (nacc_total as f64 / ntetra as f64) > 0.1 {
+        if ntetra > 0 && (nacc_total as f32 / ntetra as f32) > 0.1f32 {
             alfa = 10.0f32 * alfa;
         }
     }
@@ -1313,7 +1312,9 @@ fn convert_prealignment(
 pub struct DaliconCd1State {
     pub code: String,
     pub nres: usize,
-    pub ca: Array2<f64>,
+    /// REAL coordinates; like ca1 in dowork_dalicon they are transformed in
+    /// place by each fitz and carried over to the next cd2.
+    pub ca: Array2<f32>,
     pub dist: DaliconDistMat,
 }
 
@@ -1435,7 +1436,7 @@ pub fn dowork_dalicon(
         *cd1_state = Some(DaliconCd1State {
             code: cd1.to_string(),
             nres: prot1.nres,
-            ca: ca1,
+            ca: ca1.mapv(|v| v as f32),
             dist: d1,
         });
     }
@@ -1461,30 +1462,13 @@ pub fn dowork_dalicon(
             }
         }
 
-        // Initial superposition from prealignment (Python: getut + transrotate)
-        {
-            let pairs: Vec<(usize, usize)> = (0..nres1)
-                .filter(|&i| ali_0based[i] >= 0)
-                .map(|i| (i, ali_0based[i] as usize))
-                .collect();
-            let lali = pairs.len();
-            if lali > 0 {
-                let mut ux = Array2::zeros((3, lali));
-                let mut uy = Array2::zeros((3, lali));
-                let w = vec![1.0; lali];
-                for (k, &(i_idx, j_idx)) in pairs.iter().enumerate() {
-                    for dim in 0..3 {
-                        ux[[dim, k]] = cd1_s.ca[[dim, i_idx]];
-                        uy[[dim, k]] = ca2[[dim, j_idx]];
-                    }
-                }
-                let result = u3b(&w, &ux, &uy, lali, 1);
-                transrotate(&mut cd1_s.ca, &result.u, &result.t);
-            }
-        }
+        // Initial superposition from prealignment (getut + transrotate)
+        let ca2_32 = ca2.mapv(|v| v as f32);
+        let (res, _, _) = getut_f32(&ali_0based, &cd1_s.ca, &ca2_32);
+        transrotate_f32(&mut cd1_s.ca, &res.u, &res.t);
 
         // fitz modifies ca1 in-place (via transrotate)
-        let _fitz_result = fitz(&mut cd1_s.ca, ca2, FITZRCUT, FITZMAXITER);
+        let _fitz_result = fitz(&mut cd1_s.ca, &ca2_32, FITZRCUT, FITZMAXITER);
 
         // Overwrite preali1 if fitz result is longer
         let nali_fitz = _fitz_result.lali;

@@ -1,7 +1,8 @@
 use crate::types::{Segment, SseType};
 
-/// Minimum helix length (residues) to keep without growing.
-const MIN_HELIX_HARD: usize = 6;
+/// Helices of at most this many residues are excluded outright
+/// (Fortran: `l-k.lt.6`, i.e. length <= 6).
+const MAX_EXCLUDED_HELIX: usize = 6;
 /// Target helix length for growth (LENH parameter in Fortran).
 const LENH: usize = 8;
 /// Target strand length for growth (LENE parameter in Fortran).
@@ -89,7 +90,7 @@ pub fn assign_segments(dssp8: &[u8]) -> (Vec<Segment>, Vec<SseType>, usize, usiz
         let mut l = end;
         let len = l - k + 1;
 
-        if c == b'H' && len < MIN_HELIX_HARD {
+        if c == b'H' && len <= MAX_EXCLUDED_HELIX {
             // Too short to even try growing
             continue;
         } else if c == b'H' && len < LENH {
@@ -107,7 +108,9 @@ pub fn assign_segments(dssp8: &[u8]) -> (Vec<Segment>, Vec<SseType>, usize, usiz
                     Err(()) => ierr = true,
                 }
             }
-            if ierr && l - k + 1 < LENH {
+            // Fortran excludes on ierr alone ('crowded segment excluded!'), even when
+            // growleft already reached the target length.
+            if ierr {
                 continue;
             }
         } else if c == b'E' && len < LENE {
@@ -122,7 +125,7 @@ pub fn assign_segments(dssp8: &[u8]) -> (Vec<Segment>, Vec<SseType>, usize, usiz
                     Err(()) => ierr = true,
                 }
             }
-            if ierr && l - k + 1 < LENE {
+            if ierr {
                 continue;
             }
         }
