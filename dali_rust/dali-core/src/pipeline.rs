@@ -413,21 +413,33 @@ pub fn search_database(
     // Filter by z-score
     all_results.retain(|r| r.zscore >= z_cut);
 
-    // Deduplicate: keep highest z-score per (cd1, cd2) pair
+    // Deduplicate as dali.pl's report does: sortdccp.pl sorts the DCCP blocks
+    // of cd1.dccp on the Z-score *as printed* (f8.1) with Perl's stable sort,
+    // and fsspfilter.pl keeps the first block per cd2. all_results is in
+    // cd1.dccp order (WOLF, PARSI, then the reverse direction's WOLF, PARSI),
+    // so among blocks whose printed Z ties, the earliest wins.
+    let printed_z = |z: f64| -> f64 { format!("{:.1}", z).parse().unwrap_or(z) };
+    let mut order: Vec<(String, String)> = Vec::new();
     let mut best_map: HashMap<(String, String), DccpEntry> = HashMap::new();
     for entry in all_results {
         let key = (entry.cd1.clone(), entry.cd2.clone());
         let replace = match best_map.get(&key) {
-            Some(existing) => entry.zscore > existing.zscore,
-            None => true,
+            Some(existing) => printed_z(entry.zscore) > printed_z(existing.zscore),
+            None => {
+                order.push(key.clone());
+                true
+            }
         };
         if replace {
             best_map.insert(key, entry);
         }
     }
 
-    let mut results: Vec<DccpEntry> = best_map.into_values().collect();
-    results.sort_by(|a, b| b.zscore.partial_cmp(&a.zscore).unwrap_or(std::cmp::Ordering::Equal));
+    let mut results: Vec<DccpEntry> = order.into_iter()
+        .filter_map(|k| best_map.remove(&k))
+        .collect();
+    results.sort_by(|a, b| printed_z(b.zscore).partial_cmp(&printed_z(a.zscore))
+        .unwrap_or(std::cmp::Ordering::Equal));
     results
 }
 

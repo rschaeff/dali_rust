@@ -53,8 +53,11 @@ fn test_bothways_hits_are_query_oriented() {
     }
 }
 
-/// Searching both ways can only add candidates, and the result is symmetric in Z:
-/// q->t bothways and t->q bothways see the same four paths.
+/// Searching both ways can only add candidates, and the result is symmetric in
+/// the printed Z (f8.1): q->t bothways and t->q bothways see the same four
+/// paths. The exact Z can differ, because blocks whose printed Z ties are
+/// resolved by .dccp order (first wins, as sortdccp.pl/fsspfilter.pl do), and
+/// that order depends on which structure is cd1.
 #[test]
 fn test_bothways_superset_and_symmetric() {
     let store = ProteinStore::new(DAT_DIR_5);
@@ -62,8 +65,9 @@ fn test_bothways_superset_and_symmetric() {
         let fwd = search_database(q, &[t], &store, 2.0, false, false);
         let both = search_database(q, &[t], &store, 2.0, false, true);
         let both_rev = search_database(t, &[q], &store, 2.0, false, true);
-        assert!(best(&both) >= best(&fwd), "{} {}: {} < {}", q, t, best(&both), best(&fwd));
-        assert!((best(&both) - best(&both_rev)).abs() < 1e-9,
+        let p = |z: f64| format!("{:.1}", z).parse::<f64>().unwrap();
+        assert!(p(best(&both)) >= p(best(&fwd)), "{} {}: {} < {}", q, t, best(&both), best(&fwd));
+        assert!(p(best(&both)) == p(best(&both_rev)),
                 "{} {}: {} vs {}", q, t, best(&both), best(&both_rev));
     }
 }
