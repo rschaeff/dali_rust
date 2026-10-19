@@ -4,6 +4,7 @@ pub mod io;
 pub mod store;
 
 pub mod wolf;
+pub mod soap;
 pub mod dp;
 pub mod dalicon;
 pub mod parsi;

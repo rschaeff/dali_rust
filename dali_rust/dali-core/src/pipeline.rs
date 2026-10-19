@@ -16,6 +16,7 @@ use crate::io::{import_pdb_text, ImportError};
 use crate::store::ProteinStore;
 use crate::numerics::compute_transform;
 use crate::wolf;
+use crate::soap;
 use crate::dp;
 use crate::dalicon::{self, DaliconRecord};
 use crate::parsi;
@@ -43,6 +44,9 @@ const FILTER95_ZCUT_DEFAULT: f64 = 1.0;
 //   DALI_PIPENBEST      pipe96 entries kept per (cd1,cd2) key   (default 2)
 //
 // Read once per process and cached, so changing the variable mid-run does nothing.
+
+/// dali.pl $MINSSE: queries with fewer SSEs go to SOAP.
+const MINSSE: usize = 3;
 
 fn env_or<T: std::str::FromStr>(key: &str, default: T) -> T {
     std::env::var(key).ok().and_then(|s| s.parse().ok()).unwrap_or(default)
@@ -190,6 +194,39 @@ pub fn run_wolf_path(
         }
     }
 
+    wolfitz_to_dccp(wolf_results, store)
+}
+
+/// SOAP path (query nsse < 3): SOAP → DP(zcut=2.0) → DALICON(lfitz=T) → DP(zcut=2.0).
+///
+/// As serialcompare, the query's CA coordinates are loaded once and stay
+/// transformed from one target to the next.
+pub fn run_soap_path(
+    query: &str,
+    targets: &[&str],
+    store: &ProteinStore,
+) -> Vec<DccpEntry> {
+    let qprot = match store.get_protein(query) {
+        Ok(p) => p,
+        Err(_) => return Vec::new(),
+    };
+    let mut q = soap::SoapQuery::new(&qprot);
+    let mut results = Vec::new();
+    for &target in targets {
+        let tprot = match store.get_protein(target) {
+            Ok(p) => p,
+            Err(_) => continue,
+        };
+        if let Some(r) = soap::soap_compare(&mut q, &tprot) {
+            results.push(r);
+        }
+    }
+    wolfitz_to_dccp(results, store)
+}
+
+/// What mpidali.pm's `wolf` does with WOLFITZ lines from WOLF or SOAP:
+/// DP → DALICON(lfitz=T) → DP.
+fn wolfitz_to_dccp(wolf_results: Vec<wolf::WolfResult>, store: &ProteinStore) -> Vec<DccpEntry> {
     if wolf_results.is_empty() {
         return Vec::new();
     }
@@ -388,12 +425,19 @@ pub fn search_database(
 ) -> Vec<DccpEntry> {
     let mut all_results = Vec::new();
 
-    if !skip_wolf {
+    // dali.pl do_one_pairwise: a query with nsse < MINSSE (3) runs SOAP
+    // only, in the forward direction.
+    let soap_query = store.get_protein(query).map_or(false, |p| p.nseg < MINSSE);
+    if soap_query {
+        all_results.extend(run_soap_path(query, targets, store));
+    } else if !skip_wolf {
         all_results.extend(run_wolf_path(query, targets, store));
     }
-    all_results.extend(run_parsi_path(query, targets, store));
+    if !soap_query {
+        all_results.extend(run_parsi_path(query, targets, store));
+    }
 
-    if bothways {
+    if bothways && !soap_query {
         let q = [query];
         for &target in targets.iter().filter(|&&t| t != query) {
             let mut rev = Vec::new();
